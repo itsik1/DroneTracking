@@ -9,7 +9,7 @@ step. Swapping the simulated source for real device feeds leaves this loop uncha
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterator, List
 
 import numpy as np
@@ -26,7 +26,7 @@ from ..sim.acoustic import emission_times
 from ..sim.audio import reference_pulse, synthesize_captures
 from ..sim.observations import AcousticArrival
 from ..sim.scenario import Scenario
-from ..sim.simulator import simulate
+from ..sources.simulated import SimulatedDeviceFeed
 
 
 @dataclass
@@ -40,24 +40,32 @@ class Snapshot:
     anchors: List[Dict[str, Any]]  # GPS anchors
     targets: List[Dict[str, Any]]  # tracked drones: id, lat, lon, alt, r_m (1σ horiz radius)
     true_targets: List[Dict[str, Any]]  # ground-truth drone positions (sim overlay)
+    links: List[Dict[str, Any]] = field(default_factory=list)  # network mesh edges (Ph1)
+    net: Dict[str, Any] = field(default_factory=dict)  # network health summary (Ph1)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "t": self.t, "index": self.index, "total": self.total,
             "devices": self.devices, "anchors": self.anchors,
             "targets": self.targets, "true_targets": self.true_targets,
+            "links": self.links, "net": self.net,
         }
 
 
 class StreamEngine:
     """Calibrate a scenario's network, then stream per-emission state snapshots."""
 
-    def __init__(self, scenario: Scenario, *, detect: bool = False, model: str = "cv", sigma_a: float = 2.0):
+    def __init__(self, scenario: Scenario, *, detect: bool = False, model: str = "cv",
+                 sigma_a: float = 2.0, feed=None):
         self.scenario = scenario
         self.model = model
         self.sigma_a = sigma_a
 
-        observations, self.world = simulate(scenario)
+        # Read through a DeviceFeed (default: simulator). A real feed has no `.world`.
+        if feed is None:
+            feed = SimulatedDeviceFeed(scenario)
+        observations = feed.as_observations()
+        self.world = getattr(feed, "world", None)
 
         # --- one-time calibration: geometry, clocks, georeference ---
         if scenario.devices_move:
@@ -84,10 +92,13 @@ class StreamEngine:
         )
 
         self._devices = self._device_latlon()
+        # Anchors come from the feed (works for both simulated and live feeds).
         self._anchors = [
-            {"id": k, "lat": float(v[0]), "lon": float(v[1])}
-            for k, v in self.world.anchor_latlon.items()
+            {"id": a.device_id, "lat": float(a.lat), "lon": float(a.lon)}
+            for a in observations.anchor_gps
         ]
+        # Network formation (Ph1): device mesh + health, drawn as static context.
+        self._links, self._net = self._build_network()
 
     # -- snapshot stream -----------------------------------------------------
     def snapshots(self) -> Iterator[Snapshot]:
@@ -113,9 +124,42 @@ class StreamEngine:
                 la, lo = geo.enu_to_latlon(trk[j][0], trk[j][1], self.origin)
                 true_targets.append({"src": int(src), "lat": float(la), "lon": float(lo)})
 
-            yield Snapshot(t, i, n, self._devices, self._anchors, targets, true_targets)
+            yield Snapshot(t, i, n, self._devices, self._anchors, targets, true_targets,
+                           self._links, self._net)
 
     # -- helpers -------------------------------------------------------------
+    def _build_network(self):
+        """Form the device mesh (Ph1) and return (links, health) for the dashboard.
+
+        Best-effort: a networking hiccup must never break the live tracking view.
+        """
+        try:
+            from ..network.discovery import NetworkManager
+
+            pos = {d["id"]: (d["lat"], d["lon"]) for d in self._devices}
+            mgr = NetworkManager(self.scenario)
+            graph = mgr.form_network()
+            links = []
+            for e in graph.edges():
+                a, b = e[0], e[1]
+                if a in pos and b in pos:
+                    q = e[2] if len(e) > 2 else float(graph.quality_of(a, b))
+                    links.append({
+                        "a": [pos[a][0], pos[a][1]], "b": [pos[b][0], pos[b][1]],
+                        "quality": float(q),
+                    })
+            health = mgr.health()
+            net = {
+                "connected": bool(health.get("connected", False)),
+                "online": int(health.get("online", len(self._devices))),
+                "total": int(health.get("total", len(self._devices))),
+                "mean_battery": float(health.get("mean_battery", 1.0)),
+                "mean_link_quality": float(health.get("mean_link_quality", 0.0)),
+            }
+            return links, net
+        except Exception:
+            return [], {}
+
     def _device_latlon(self) -> List[Dict[str, Any]]:
         out = []
         for d in self.layout.device_ids:

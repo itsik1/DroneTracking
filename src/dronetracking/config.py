@@ -38,6 +38,9 @@ def scenario_from_dict(raw: Dict, seed_override: Optional[int] = None) -> Scenar
             proc_delay_s=float(d.get("proc_delay_s", 0.002)),
             has_gps=bool(d.get("has_gps", False)),
             velocity_mps=tuple(float(x) for x in d.get("velocity_mps", (0.0, 0.0, 0.0))),
+            battery_frac=float(d.get("battery_frac", 1.0)),
+            has_mic=bool(d.get("has_mic", True)),
+            has_speaker=bool(d.get("has_speaker", True)),
         )
         for d in raw_devices
     )
@@ -71,6 +74,7 @@ def scenario_from_dict(raw: Dict, seed_override: Optional[int] = None) -> Scenar
         extra_drones=extra_drones,
         gps_blackout=gps_blackout,
         audio=dict(raw.get("audio", {})),
+        network=dict(raw.get("network", {})),
     )
 
 

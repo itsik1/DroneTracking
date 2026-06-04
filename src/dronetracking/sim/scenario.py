@@ -24,6 +24,10 @@ class DeviceSpec:
     proc_delay_s: float = 0.002  # deliberate two-way-ranging turnaround delay
     has_gps: bool = False  # is this a georeferencing anchor?
     velocity_mps: Vec3 = (0.0, 0.0, 0.0)  # constant velocity for moving-device scenarios (Ph3)
+    # --- node capabilities / health for network formation (Ph1) ---
+    battery_frac: float = 1.0  # remaining battery in [0,1]
+    has_mic: bool = True  # can receive acoustic signals
+    has_speaker: bool = True  # can emit ranging chirps
 
     def position_at(self, t: float) -> Vec3:
         """True position at time ``t`` (constant-velocity drift; static by default)."""
@@ -63,6 +67,7 @@ class Scenario:
     extra_drones: Tuple[TrajectorySpec, ...] = ()  # additional targets (Ph6 multi-target)
     gps_blackout: Tuple[Tuple[float, float], ...] = ()  # (start,end) GPS-denied windows (Ph9)
     audio: Dict = field(default_factory=dict)  # acoustic-synthesis params (Ph4 detection)
+    network: Dict = field(default_factory=dict)  # discovery/transport params (Ph1 networking)
 
     @property
     def device_ids(self) -> Tuple[str, ...]:

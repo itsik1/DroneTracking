@@ -31,7 +31,8 @@ _PAGE = """<!doctype html>
 <body><div id="map"></div>
 <div id="hud"><div><b>DroneTracking</b> live — __TITLE__</div>
   <div id="status">connecting…</div>
-  <div class="lg">🔵 device &nbsp; 🟢 GPS anchor / true drone &nbsp; 🔴 tracked drone (+1σ)</div></div>
+  <div id="net" class="lg"></div>
+  <div class="lg">🔵 device &nbsp; 🟢 GPS anchor / true drone &nbsp; 🔴 tracked drone (+1σ) &nbsp; — mesh links in gray</div></div>
 <script>
 const map = L.map('map').setView([__LAT__, __LON__], 17);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -44,10 +45,17 @@ es.onmessage = (e)=>{
   document.getElementById('status').textContent =
     `t = ${s.t.toFixed(1)} s   frame ${s.index+1}/${s.total}   targets: ${s.targets.length}`;
   if(devs.length===0){
+    (s.links||[]).forEach(L_=>L.polyline([L_.a,L_.b],
+      {color:'#888',weight:1+2*(L_.quality||0),opacity:.25+.5*(L_.quality||0)}).addTo(map));
     s.devices.forEach(d=>devs.push(L.circleMarker([d.lat,d.lon],
       {radius:5,color:'#1f77b4',fill:true,fillColor:'#1f77b4',fillOpacity:.9}).addTo(map).bindTooltip('device '+d.id)));
     s.anchors.forEach(a=>anch.push(L.circleMarker([a.lat,a.lon],
       {radius:7,color:'#2ca02c',weight:3,fill:false}).addTo(map).bindTooltip('GPS anchor '+a.id)));
+  }
+  if(s.net && s.net.total!==undefined){
+    document.getElementById('net').textContent =
+      `network: ${s.net.connected?'connected':'PARTITIONED'}  ${s.net.online}/${s.net.total} online`
+      + `  · battery ${(s.net.mean_battery*100).toFixed(0)}%  · link ${(s.net.mean_link_quality*100).toFixed(0)}%`;
   }
   s.targets.forEach((t,k)=>{
     const c=COLORS[k%COLORS.length];

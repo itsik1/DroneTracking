@@ -99,11 +99,27 @@ range-delay spread or per-device emissions alias; multi-target association is do
 motion only (sources are not used as identity); moving-device geometry needs ≥4 well-spread
 static anchors to fix the gauge.
 
+## Results (iteration 3 — networking, hardware bridge, joint clock)
+
+- **Phase 1 — Network Formation** (`dronetracking.network`): a node registry (battery,
+  mic/speaker/GPS capabilities, confidence), simulated peer discovery forming a device
+  mesh, a transport model with per-link-type (BLE/Wi-Fi/mesh) range/latency/loss, and a
+  `NetworkManager` reporting connectivity and health. The mesh + health now render live in
+  the dashboard.
+- **Hardware bridge** (`dronetracking.sources`): a `DeviceFeed` interface the pipeline and
+  streaming engine read through. `SimulatedDeviceFeed` is the reference; `LiveDeviceFeed` is
+  the documented contract for real devices. Swapping the feed is the *only* change needed to
+  go from simulation to hardware — nothing downstream moves.
+- **Joint clock+position** (`estimation.joint_clock`, `--joint-clock`): co-estimates residual
+  per-device clock offsets with the target position (one shared offset per device across
+  emissions). Cuts localization error 2.5–7.8× when clock sync leaves residual error; no
+  regression on clean clocks.
+
 ## Scope
 
-Iterations 1–2 cover Phases 2–9 of the project vision **in simulation**: relative
-localization, clock-sync-free TDOA, single- and multi-target tracking, acoustic detection,
-continuous geometry under motion, georeferencing, and GPS-denied operation. Still deferred:
-Phase 1 networking/device discovery, joint clock+position estimation, overlapping-source
-acoustic separation, and **real hardware** (the next major leap — real microphones, radios,
-and clocks behind the same interfaces).
+Iterations 1–3 cover **Phases 1–9** of the project vision in simulation: network formation,
+GPS-free relative localization, clock-sync-free TDOA, single/multi-target tracking, acoustic
+detection, continuous geometry under motion, georeferencing, GPS-denied operation, live
+streaming, and joint clock+position refinement — all behind a hardware-feed abstraction.
+Still deferred: **real hardware** (implement `LiveDeviceFeed` against real microphones,
+radios, and clocks) and overlapping-source acoustic separation.

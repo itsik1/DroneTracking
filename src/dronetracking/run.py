@@ -30,12 +30,15 @@ def main(argv=None) -> int:
     p.add_argument("--model", default="cv", choices=["cv", "ca"], help="tracking motion model")
     p.add_argument("--sigma-a", type=float, default=2.0, help="tracking process-noise accel std")
     p.add_argument("--detect", action="store_true", help="localize from synthesized audio via DSP detection (Ph4)")
+    p.add_argument("--joint-clock", action="store_true", help="co-estimate residual clock offsets with position (single-target)")
+    p.add_argument("--clock-prior-s", type=float, default=1e-4, help="prior std for joint clock offsets (s)")
     p.add_argument("--no-map", action="store_true", help="skip the folium map")
     p.add_argument("--no-plots", action="store_true", help="skip the matplotlib diagnostics")
     args = p.parse_args(argv)
 
     scenario = load_scenario(args.scenario, seed_override=args.seed)
-    result = run_pipeline(scenario, model=args.model, sigma_a=args.sigma_a, detect=args.detect)
+    result = run_pipeline(scenario, model=args.model, sigma_a=args.sigma_a, detect=args.detect,
+                          joint_clock=args.joint_clock, clock_prior_s=args.clock_prior_s)
 
     print_report(result.metrics)
 

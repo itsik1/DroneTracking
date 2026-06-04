@@ -21,13 +21,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from .sim.scenario import Scenario
-from .sim.simulator import simulate
 from .sim.acoustic import emission_times
 from .sim.audio import synthesize_captures, reference_pulse
+from .sources.simulated import SimulatedDeviceFeed
 from .estimation.ranging import build_distance_matrix
 from .estimation.relative_localization import estimate_layout
 from .estimation.clock_sync import estimate_clocks
 from .estimation.tdoa import localize_all
+from .estimation.joint_clock import localize_all_joint
 from .estimation.tracking import track_target
 from .estimation.georeference import solve_transform, georeference_track
 from .estimation.detection import detect_arrivals
@@ -56,8 +57,15 @@ class PipelineResult:
         return len(self.tracks) > 1 or bool(self.scenario.extra_drones)
 
 
-def run_pipeline(scenario: Scenario, *, model: str = "cv", sigma_a: float = 2.0, detect: bool = False) -> PipelineResult:
-    observations, world = simulate(scenario)
+def run_pipeline(scenario: Scenario, *, model: str = "cv", sigma_a: float = 2.0,
+                 detect: bool = False, joint_clock: bool = False, clock_prior_s: float = 1e-4,
+                 feed=None) -> PipelineResult:
+    # Read measurements through a DeviceFeed (the hardware-abstraction seam): the default
+    # is the simulator; a real LiveDeviceFeed drops in here with no downstream changes.
+    if feed is None:
+        feed = SimulatedDeviceFeed(scenario)
+    observations = feed.as_observations()
+    world = getattr(feed, "world", None)
 
     # 1. Geometry: a live series if devices move, else a single static layout.
     geometry_series = None
@@ -83,7 +91,11 @@ def run_pipeline(scenario: Scenario, *, model: str = "cv", sigma_a: float = 2.0,
         frames = localize_frames(observations.acoustic, clocks, layout, observations.speed_of_sound_mps)
         tracks = track_targets(frames)
     else:
-        fixes = localize_all(observations, clocks, layout)
+        if joint_clock:
+            fixes = localize_all_joint(observations, clocks, layout,
+                                       observations.speed_of_sound_mps, clock_prior_s=clock_prior_s)
+        else:
+            fixes = localize_all(observations, clocks, layout)
         tracks = [track_target(fixes, model=model, sigma_a=sigma_a)]
 
     # 5. Georeference each track (GPS-denied blend if a blackout is scheduled).
@@ -100,14 +112,17 @@ def run_pipeline(scenario: Scenario, *, model: str = "cv", sigma_a: float = 2.0,
 
     estimates = Estimates(layout=layout, clocks=clocks, track=tracks[0], geo_track=geo_tracks[0])
 
-    # 6. Score. Baseline metrics always; phase-specific metrics merged in.
-    metrics = compute_metrics(world, observations, estimates)
-    if scenario.extra_drones:
-        metrics.update(phase_metrics.multi_target_metrics(world, tracks, estimates.layout))
-    if geometry_series is not None:
-        metrics.update(phase_metrics.geometry_metrics(world, geometry_series))
-    if scenario.gps_blackout:
-        metrics.update(phase_metrics.gps_denied_metrics(world, geo_tracks[0], scenario.gps_blackout))
+    # 6. Score against ground truth — only available with a simulated feed. A real
+    # LiveDeviceFeed has no truth, so metrics are skipped (estimates still produced).
+    metrics: Dict[str, Any] = {}
+    if world is not None:
+        metrics = compute_metrics(world, observations, estimates)
+        if scenario.extra_drones:
+            metrics.update(phase_metrics.multi_target_metrics(world, tracks, estimates.layout))
+        if geometry_series is not None:
+            metrics.update(phase_metrics.geometry_metrics(world, geometry_series))
+        if scenario.gps_blackout:
+            metrics.update(phase_metrics.gps_denied_metrics(world, geo_tracks[0], scenario.gps_blackout))
 
     return PipelineResult(
         scenario=scenario, observations=observations, world=world,

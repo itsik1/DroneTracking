@@ -1,0 +1,34 @@
+# Network-formation demo (Ph1). Six ground devices spread over a ~250 m field with a
+# Wi-Fi radio (comm_range_m: 180). The layout is a connected mesh: every device has at
+# least one in-range peer, but no single radio reaches the whole field, so the graph is
+# multi-hop rather than a clique. Devices carry VARIED battery levels and capabilities
+# (one has no mic, one no speaker) to exercise the node registry / health summary.
+name: network_demo
+seed: 7
+speed_of_sound_mps: 343.0
+sample_rate_hz: 48000.0
+duration_s: 10.0
+dt_s: 0.5
+ranging_rounds: 20
+origin_latlon: [32.0853, 34.7818]
+
+network:
+  kind: wifi
+  comm_range_m: 180.0
+  latency_s: 0.005
+  loss_prob: 0.02
+
+devices:
+  - {id: dev0, position_m: [0.0,   0.0,   0.0], has_gps: true,  battery_frac: 0.95, has_mic: true,  has_speaker: true}
+  - {id: dev1, position_m: [150.0, 0.0,  12.0], has_gps: true,  battery_frac: 0.60, has_mic: true,  has_speaker: true}
+  - {id: dev2, position_m: [300.0, 60.0,  8.0], has_gps: true,  battery_frac: 0.42, has_mic: true,  has_speaker: false}
+  - {id: dev3, position_m: [60.0,  150.0, 5.0], has_gps: false, battery_frac: 0.88, has_mic: false, has_speaker: true}
+  - {id: dev4, position_m: [220.0, 170.0, 3.0], has_gps: true,  battery_frac: 0.30, has_mic: true,  has_speaker: true}
+  - {id: dev5, position_m: [140.0, 90.0,  2.0], has_gps: false, battery_frac: 0.75, has_mic: true,  has_speaker: true}
+
+trajectory:
+  kind: linear
+  z_m: 55.0
+  params:
+    start_m: [-40.0, 40.0]
+    end_m:   [320.0, 130.0]
