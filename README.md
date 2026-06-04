@@ -130,11 +130,28 @@ static anchors to fix the gauge.
   localization stay at cm-level across a 4× noise range while georeferencing scales with GPS
   noise, i.e. the acoustic core is robust and accuracy is GPS-anchor-bound.
 
+## Results (iteration 5 — separation + the road to hardware)
+
+- **Overlapping-source separation** (`estimation/separation.py`): a matched-filter bank that
+  separates several simultaneously-emitting drones (distinct signatures) from each device's
+  mixed audio into per-source arrivals, which feed the multi-target TDOA path. Zero cross-talk
+  and sub-sample accuracy in tests.
+- **Recorded-data feed** (`sources/recorded.py`): `RecordedAudioFeed` ingests per-device WAVs +
+  a `meta.json` from disk and runs detection → arrivals, so a session captured on real devices
+  replays through the exact same pipeline (`run_pipeline(scenario, feed=RecordedAudioFeed(dir))`).
+- **Hardware bringup guide** ([`docs/hardware_bringup.md`](docs/hardware_bringup.md)): how to
+  deploy on real devices — per-device capture, the calibrate-then-track flow, the SDS-TWR clock
+  scheme, `sounddevice`/GPS capture, known limits, and a staged bringup checklist.
+
 ## Scope
 
-Iterations 1–4 cover **Phases 1–9** of the project vision in simulation: network formation,
+Iterations 1–5 implement **Phases 1–9** of the project vision in simulation — network formation,
 GPS-free relative localization, clock-sync-free TDOA, single/multi-target tracking, acoustic
-detection, continuous geometry under motion, georeferencing, GPS-denied operation, live
-streaming, and joint clock+position refinement — all behind a hardware-feed abstraction.
-Still deferred: **real hardware** (implement `LiveDeviceFeed` against real microphones,
-radios, and clocks) and overlapping-source acoustic separation.
+detection and overlapping-source separation, continuous geometry under motion, georeferencing,
+GPS-denied operation, live streaming, joint clock+position refinement, and a real socket-based
+distributed runtime — all behind a hardware-feed abstraction (simulated, recorded-file, and
+socket feeds today; a `LiveDeviceFeed` skeleton + bringup guide for real sensors).
+
+The remaining frontier is **real hardware**: implement the documented `LiveDeviceFeed`/device
+agent against physical microphones, radios, and clocks. The interfaces, wire protocol, recorded
+replay path, and bringup guide are all in place — what's left needs devices, not more simulation.

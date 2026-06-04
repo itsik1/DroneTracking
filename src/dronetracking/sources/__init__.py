@@ -8,6 +8,8 @@ consumes, so the source of measurements can be swapped without touching the pipe
 * :class:`SimulatedDeviceFeed` wraps the simulator (the reference feed; also carries
   ground truth via ``.world`` for evaluation).
 * :class:`LiveDeviceFeed` is the documented skeleton a real device network fills in.
+* :class:`RecordedAudioFeed` ingests recorded per-device WAVs + metadata from disk.
+* :class:`SocketDeviceFeed` reassembles measurements published by devices over TCP.
 
 Named ``sources`` (not ``io``) to avoid shadowing the stdlib ``io`` module. As a sim
 adapter layer (not estimation), it may import ``dronetracking.sim``.
@@ -17,6 +19,11 @@ from __future__ import annotations
 
 from .base import DeviceFeed
 from .live import LiveDeviceFeed
+from .recorded import RecordedAudioFeed
 from .simulated import SimulatedDeviceFeed
+from .socket_feed import SocketDeviceFeed
 
-__all__ = ["DeviceFeed", "SimulatedDeviceFeed", "LiveDeviceFeed"]
+__all__ = [
+    "DeviceFeed", "SimulatedDeviceFeed", "LiveDeviceFeed",
+    "RecordedAudioFeed", "SocketDeviceFeed",
+]
