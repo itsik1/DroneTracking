@@ -19,7 +19,8 @@ from ..estimation.clock_sync import estimate_clocks
 from ..estimation.detection import detect_arrivals
 from ..estimation.geometry_tracking import track_geometry
 from ..estimation.georeference import solve_transform
-from ..estimation.multi_target import localize_frames, track_targets
+from ..estimation.multi_target import localize_frames
+from ..estimation.online_tracker import OnlineTracker
 from ..estimation.ranging import build_distance_matrix
 from ..estimation.relative_localization import estimate_layout
 from ..sim.acoustic import emission_times
@@ -104,9 +105,12 @@ class StreamEngine:
     def snapshots(self) -> Iterator[Snapshot]:
         n = len(self.frames)
         true_tracks = dict(getattr(self.world, "true_tracks", {}) or {})
+        tracker = OnlineTracker(model=self.model, sigma_a=self.sigma_a)  # stateful, O(1)/frame
         for i in range(n):
-            tracks = track_targets(self.frames[: i + 1])  # online: tracker over the prefix
-            t = float(self.frames[i][0])
+            t, fixes = self.frames[i]
+            t = float(t)
+            tracker.update(fixes, t)  # incremental update — no batch reprocessing
+            tracks = tracker.tracks()
 
             targets = []
             for k, tr in enumerate(tracks):

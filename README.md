@@ -115,9 +115,24 @@ static anchors to fix the gauge.
   emissions). Cuts localization error 2.5–7.8× when clock sync leaves residual error; no
   regression on clean clocks.
 
+## Results (iteration 4 — real-time, distributed, quantified)
+
+- **Online tracking** (`estimation/online_tracker.py`): a stateful `OnlineTracker.update(fixes, t)`
+  that the streaming engine now drives one frame at a time (incremental association + KF +
+  birth/death), replacing the per-frame batch re-run — real-time, O(tracks×fixes) per step.
+- **Distributed runtime** (`live/protocol.py`, `live/agent.py`, `sources/socket_feed.py`,
+  `live/coordinator.py`): each device publishes only its own measurements over TCP; the
+  coordinator reassembles them into `Observations` and runs the pipeline. Verified end-to-end —
+  5 device agents over sockets reconstruct the simulator's data exactly, then estimate. This is
+  the literal data path real hardware uses (`python -m dronetracking.live.coordinator`).
+- **Robustness study** (`studies/`, `python -m dronetracking.studies`): sweeps noise / device
+  count and plots accuracy vs parameter. Confirms the headline finding — tracking and device
+  localization stay at cm-level across a 4× noise range while georeferencing scales with GPS
+  noise, i.e. the acoustic core is robust and accuracy is GPS-anchor-bound.
+
 ## Scope
 
-Iterations 1–3 cover **Phases 1–9** of the project vision in simulation: network formation,
+Iterations 1–4 cover **Phases 1–9** of the project vision in simulation: network formation,
 GPS-free relative localization, clock-sync-free TDOA, single/multi-target tracking, acoustic
 detection, continuous geometry under motion, georeferencing, GPS-denied operation, live
 streaming, and joint clock+position refinement — all behind a hardware-feed abstraction.
