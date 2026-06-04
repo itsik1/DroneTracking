@@ -1,0 +1,31 @@
+# Ideal scenario for the exact-recovery test: ZERO measurement noise, but nonzero
+# clock offsets/drifts and processing delays (so clock recovery is genuinely exercised).
+# 4 non-coplanar anchors (varied heights) -> 3D georeferencing is well-posed.
+name: noisefree_ideal
+seed: 1
+speed_of_sound_mps: 343.0
+sample_rate_hz: 192000.0
+duration_s: 10.0
+dt_s: 0.5
+ranging_rounds: 40
+origin_latlon: [32.0853, 34.7818]
+
+noise:
+  ranging_timestamp_std_s: 0.0
+  toa_std_s: 0.0
+  proc_delay_jitter_s: 0.0
+  gps_pos_std_m: 0.0
+
+devices:
+  - {id: dev0, position_m: [0.0,   0.0,    0.0], clock_offset_s:  0.00, clock_drift_ppm:   0.0, proc_delay_s: 0.00200, has_gps: true}
+  - {id: dev1, position_m: [180.0, 0.0,   20.0], clock_offset_s:  0.20, clock_drift_ppm:  35.0, proc_delay_s: 0.00220, has_gps: true}
+  - {id: dev2, position_m: [180.0, 180.0,  6.0], clock_offset_s: -0.15, clock_drift_ppm: -25.0, proc_delay_s: 0.00180, has_gps: true}
+  - {id: dev3, position_m: [0.0,   180.0, 14.0], clock_offset_s:  0.07, clock_drift_ppm:  18.0, proc_delay_s: 0.00205, has_gps: true}
+  - {id: dev4, position_m: [90.0,  90.0,   8.0], clock_offset_s: -0.04, clock_drift_ppm:  50.0, proc_delay_s: 0.00210}
+
+trajectory:
+  kind: linear
+  z_m: 70.0
+  params:
+    start_m: [-40.0, 40.0]
+    end_m:   [220.0, 140.0]

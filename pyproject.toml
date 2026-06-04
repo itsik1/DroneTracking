@@ -1,0 +1,33 @@
+[project]
+name = "dronetracking"
+version = "0.1.0"
+description = "Simulation-first testbed for distributed acoustic drone localization (GPS-free, clock-sync-free)."
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "folium>=0.15",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov"]
+plotly = ["plotly>=5.18"]
+
+[project.scripts]
+dronetracking = "dronetracking.run:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "slow: end-to-end / sweep tests (deselect with '-m \"not slow\"')",
+]

@@ -1,0 +1,32 @@
+# Headline scenario: 5 devices in a ~200 m field, a drone flies a diagonal at 60 m,
+# 4 of the 5 devices are GPS anchors at VARIED HEIGHTS (some on masts/buildings).
+# Unambiguous 3D georeferencing needs >=4 non-coplanar anchors -- 3 coplanar anchors
+# leave the vertical handedness ambiguous and flip the drone's altitude. Moderate noise.
+name: field_5dev
+seed: 42
+speed_of_sound_mps: 343.0
+sample_rate_hz: 48000.0
+duration_s: 20.0
+dt_s: 0.5            # one drone emission every 0.5 s
+ranging_rounds: 40  # two-way ranging exchanges per device pair
+origin_latlon: [32.0853, 34.7818]
+
+noise:
+  ranging_timestamp_std_s: 3.0e-5   # ~1 cm at 343 m/s
+  toa_std_s: 5.0e-5                 # ~1.7 cm
+  proc_delay_jitter_s: 2.0e-5
+  gps_pos_std_m: 2.0
+
+devices:
+  - {id: dev0, position_m: [0.0,   0.0,    0.0], clock_offset_s:  0.00, clock_drift_ppm:   0.0, proc_delay_s: 0.00200, has_gps: true}
+  - {id: dev1, position_m: [200.0, 0.0,   18.0], clock_offset_s:  0.12, clock_drift_ppm:  30.0, proc_delay_s: 0.00210, has_gps: true}
+  - {id: dev2, position_m: [200.0, 200.0,  5.0], clock_offset_s: -0.08, clock_drift_ppm: -20.0, proc_delay_s: 0.00190, has_gps: true}
+  - {id: dev3, position_m: [0.0,   200.0, 12.0], clock_offset_s:  0.05, clock_drift_ppm:  12.0, proc_delay_s: 0.00205, has_gps: true}
+  - {id: dev4, position_m: [100.0, 100.0,  2.0], clock_offset_s: -0.03, clock_drift_ppm:  45.0, proc_delay_s: 0.00205}
+
+trajectory:
+  kind: linear
+  z_m: 60.0
+  params:
+    start_m: [-50.0, 50.0]
+    end_m:   [250.0, 150.0]
