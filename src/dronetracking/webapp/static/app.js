@@ -24,6 +24,19 @@
   const SPECTRO_MIN_HZ = 0;
   const SPECTRO_MAX_HZ = 8000;      // spectrogram display range
 
+  // ---- acoustic ranging (SDS-TWR) -----------------------------------------
+  // Protocol: state.command.ranging = {round, initiator, responder,
+  //   chirp:{f0,f1,dur_s}}. We POST half-exchanges in report.ranging:
+  //   init -> {round, role:"init", t1, t4}; resp -> {round, role:"resp", t2, t3}.
+  // distance = c * ((t4-t1) - (t3-t2)) / 2. All times are AudioContext.currentTime (s).
+  const RESPONDER_TURNAROUND_S = 0.15;   // fixed B-local delay between hearing (t2) and replying (t3)
+  const RING_SECONDS = 1.5;              // rolling mic capture window we cross-correlate against
+  const CAPTURE_FRAME = 2048;            // ScriptProcessor block size (mono samples per callback)
+  const REPLY_WAIT_S = 0.9;              // initiator: how long to listen for the reply chirp after emit
+  const INCOMING_WAIT_S = 1.6;           // responder: how long to listen for the incoming chirp
+  const XCORR_MIN_SCORE = 0.10;          // normalized correlation peak must clear this to count as an arrival
+  const RANGING_STATUS_MS = 1800;        // how long the "Ranging…" pill stays lit after activity
+
   // ------------------------------------------------------------------ state
   const state = {
     deviceId: null,
@@ -54,6 +67,12 @@
     sseConnected: false,
     sseRetry: 0,
     lastSnapshot: null,
+
+    // acoustic ranging (SDS-TWR) — rolling mic capture + chirp matched-filter
+    ranging: {
+      ring: null, ringLen: 0, write: 0, samplesWritten: 0, headTime: 0,
+      proc: null, lastRound: -1, busy: false, outbox: [], statusUntil: 0,
+    },
   };
 
   // ------------------------------------------------------------------ DOM
@@ -70,6 +89,7 @@
     sourceInfo: $("sourceInfo"), sourceErr: $("sourceErr"), sourceConf: $("sourceConf"),
     note: $("note"),
     deviceList: $("deviceList"),
+    rangeStatus: $("rangeStatus"), distList: $("distList"), relCanvas: $("relCanvas"),
     placeBtn: $("placeBtn"), centerBtn: $("centerBtn"), qrBtn: $("qrBtn"),
     qrModal: $("qrModal"), qrCanvas: $("qrCanvas"), qrUrl: $("qrUrl"), qrClose: $("qrClose"),
     gate: $("gate"), nameInput: $("nameInput"), startBtn: $("startBtn"),
@@ -153,6 +173,7 @@
     state.timeData = new Uint8Array(analyser.fftSize);
     state.micState = "on";
 
+    startRangingCapture(ctx, src);  // rolling mic capture for acoustic ranging
     setupSpectro();
     requestAnimationFrame(audioFrame);
   }
@@ -328,6 +349,10 @@
       gps: state.manualPos || state.gps, // manual tap overrides GPS (e.g. a laptop with no GPS)
       audio: state.audio, // {level, detected, confidence, peak_hz} or null
     };
+    // Attach any completed ranging half-exchanges (SDS-TWR), then clear the outbox.
+    if (state.ranging.outbox.length) {
+      body.ranging = state.ranging.outbox.splice(0, state.ranging.outbox.length);
+    }
     try {
       await fetch("/api/report", {
         method: "POST",
@@ -478,6 +503,14 @@
       fitToPoints(fitPoints);
       lastFitCount = fitPoints.length;
     }
+
+    // --- acoustic ranging: act on the round command + render distances / relative layout ---
+    try {
+      if (snap.command && snap.command.ranging) handleRanging(snap.command.ranging);
+      renderDistances(Array.isArray(snap.distances) ? snap.distances : []);
+      renderRelative(snap.relative || null);
+    } catch (_) { /* ranging is best-effort; never break the rest of the UI */ }
+    updateRangeStatus();
   }
 
   // --- connected-devices list (shows everyone, positioned or not) ---
@@ -749,6 +782,169 @@
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && state.started && state.deviceId) sendReport();
   });
+
+  // ------------------------------------------------------------------ acoustic ranging
+  // Two-way SDS-TWR: initiator emits a chirp (t1) and detects the reply (t4); responder
+  // detects the chirp (t2) and emits a reply (t3). distance = c*((t4-t1)-(t3-t2))/2.
+  // All times are this device's own AudioContext clock (offset cancels in the math).
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function makeChirp(ctx, f0, f1, dur) {
+    const sr = ctx.sampleRate, n = Math.max(8, Math.floor(dur * sr));
+    const buf = ctx.createBuffer(1, n, sr);
+    const d = buf.getChannelData(0);
+    const k = (f1 - f0) / dur;
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      const ph = 2 * Math.PI * (f0 * t + 0.5 * k * t * t);
+      const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1)); // Hann window
+      d[i] = Math.sin(ph) * w;
+    }
+    return buf;
+  }
+
+  function startRangingCapture(ctx, srcNode) {
+    try {
+      const r = state.ranging;
+      r.ringLen = Math.ceil(RING_SECONDS * ctx.sampleRate);
+      r.ring = new Float32Array(r.ringLen);
+      r.write = 0; r.samplesWritten = 0; r.headTime = ctx.currentTime;
+      const proc = ctx.createScriptProcessor(CAPTURE_FRAME, 1, 1);
+      proc.onaudioprocess = (e) => {
+        const inp = e.inputBuffer.getChannelData(0);
+        const ring = r.ring, L = r.ringLen;
+        for (let i = 0; i < inp.length; i++) { ring[r.write] = inp[i]; r.write = (r.write + 1) % L; }
+        r.samplesWritten += inp.length;
+        r.headTime = ctx.currentTime; // ~time of the most-recent sample
+      };
+      const sink = ctx.createGain(); sink.gain.value = 0; // silent: ScriptProcessor needs a sink, no feedback
+      srcNode.connect(proc); proc.connect(sink); sink.connect(ctx.destination);
+      r.proc = proc;
+    } catch (_) { /* ranging capture unavailable -> ranging silently disabled */ }
+  }
+
+  const gIndexTime = (g) => state.ranging.headTime - (state.ranging.samplesWritten - g) / state.audioCtx.sampleRate;
+  const timeGIndex = (t) => state.ranging.samplesWritten - (state.ranging.headTime - t) * state.audioCtx.sampleRate;
+
+  // Matched-filter: find the best chirp arrival within [tFrom,tTo]; null if below threshold.
+  function findChirp(template, tFrom, tTo) {
+    const r = state.ranging, ctx = state.audioCtx;
+    if (!r.ring || !ctx) return null;
+    const M = template.length;
+    const newest = r.samplesWritten - 1, oldest = r.samplesWritten - r.ringLen;
+    const gFrom = Math.max(Math.floor(timeGIndex(tFrom)), oldest);
+    const gTo = Math.min(Math.ceil(timeGIndex(tTo)), newest - M);
+    if (gTo <= gFrom) return null;
+    const span = (gTo - gFrom) + M + 1;
+    const win = new Float32Array(span);
+    for (let i = 0; i < span; i++) {
+      const g = gFrom + i;
+      win[i] = (g < oldest || g > newest) ? 0 : r.ring[((g % r.ringLen) + r.ringLen) % r.ringLen];
+    }
+    let tnorm = 0; for (let i = 0; i < M; i++) tnorm += template[i] * template[i];
+    tnorm = Math.sqrt(tnorm) || 1;
+    const lags = gTo - gFrom; let best = -1, bestLag = 0; const coarse = 4;
+    const score = (lag) => {
+      let dot = 0, e = 0;
+      for (let i = 0; i < M; i++) { const s = win[lag + i]; dot += s * template[i]; e += s * s; }
+      return dot / (Math.sqrt(e) * tnorm + 1e-9);
+    };
+    for (let lag = 0; lag <= lags; lag += coarse) { const sc = score(lag); if (sc > best) { best = sc; bestLag = lag; } }
+    for (let lag = Math.max(0, bestLag - coarse); lag <= Math.min(lags, bestLag + coarse); lag++) {
+      const sc = score(lag); if (sc > best) { best = sc; bestLag = lag; }
+    }
+    if (best < XCORR_MIN_SCORE) return null;
+    return { time: gIndexTime(gFrom + bestLag), score: best };
+  }
+
+  function playChirpAt(ctx, buf, at) {
+    try {
+      const s = ctx.createBufferSource(); s.buffer = buf;
+      const g = ctx.createGain(); g.gain.value = 0.9;
+      s.connect(g); g.connect(ctx.destination); s.start(at);
+      return at;
+    } catch (_) { return at; }
+  }
+
+  function setRangingStatus() { state.ranging.statusUntil = Date.now() + RANGING_STATUS_MS; }
+  function updateRangeStatus() {
+    const el = els.rangeStatus; if (!el) return;
+    const active = Date.now() < state.ranging.statusUntil;
+    el.textContent = active ? "ranging…" : "idle";
+    el.className = "tag " + (active ? "ranging" : "none");
+  }
+
+  // Perform this device's half of a ranging round, then flush via report.
+  async function handleRanging(cmd) {
+    const r = state.ranging, ctx = state.audioCtx, me = state.deviceId;
+    if (!cmd || !ctx || !r.ring || r.busy || cmd.round === r.lastRound) return;
+    if (cmd.initiator !== me && cmd.responder !== me) return; // not my round
+    r.lastRound = cmd.round; r.busy = true; setRangingStatus();
+    try {
+      const ch = cmd.chirp || {};
+      const buf = makeChirp(ctx, ch.f0 || 1500, ch.f1 || 4500, ch.dur_s || 0.05);
+      const template = buf.getChannelData(0).slice();
+      if (cmd.initiator === me) {
+        const t1 = ctx.currentTime + 0.12;
+        playChirpAt(ctx, buf, t1);
+        await sleep((0.12 + REPLY_WAIT_S) * 1000);
+        const hit = findChirp(template, t1 + 0.02, t1 + 0.12 + REPLY_WAIT_S);
+        if (hit) r.outbox.push({ round: cmd.round, role: "init", t1, t4: hit.time });
+      } else {
+        const tStart = ctx.currentTime;
+        await sleep(INCOMING_WAIT_S * 1000);
+        const hit = findChirp(template, tStart, ctx.currentTime);
+        if (hit) {
+          const t2 = hit.time;
+          const t3 = Math.max(ctx.currentTime + 0.05, t2 + RESPONDER_TURNAROUND_S);
+          playChirpAt(ctx, buf, t3);
+          r.outbox.push({ round: cmd.round, role: "resp", t2, t3 });
+        }
+      }
+    } catch (_) { /* swallow — ranging is best-effort */ }
+    finally { r.busy = false; setRangingStatus(); sendReport(); }
+  }
+
+  function _devName(id) {
+    const d = (state.lastSnapshot && state.lastSnapshot.devices || []).find((x) => x.id === id);
+    return (d ? (d.name || id) : id) + (id === state.deviceId ? " (you)" : "");
+  }
+
+  function renderDistances(dists) {
+    const el = els.distList; if (!el) return;
+    if (!dists.length) { el.innerHTML = '<div class="dist-empty">measuring inter-device distances…</div>'; return; }
+    el.innerHTML = "";
+    for (const x of dists) {
+      const row = document.createElement("div");
+      row.className = "dist-row";
+      row.innerHTML = `<span>${_devName(x.a)} ↔ ${_devName(x.b)}</span>` +
+                      `<span class="m">${Number(x.m).toFixed(1)} m</span>`;
+      el.appendChild(row);
+    }
+  }
+
+  function renderRelative(rel) {
+    const cv = els.relCanvas; if (!cv) return;
+    if (!rel || !Array.isArray(rel.xy_m) || rel.xy_m.length < 2) { cv.classList.remove("show"); return; }
+    cv.classList.add("show");
+    const ctx = cv.getContext("2d"); const W = cv.width, H = cv.height;
+    ctx.fillStyle = "#070b16"; ctx.fillRect(0, 0, W, H);
+    const xs = rel.xy_m.map((p) => p[0]), ys = rel.xy_m.map((p) => p[1]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const pad = 26, spanX = Math.max(maxX - minX, 1), spanY = Math.max(maxY - minY, 1);
+    const sc = Math.min((W - 2 * pad) / spanX, (H - 2 * pad) / spanY);
+    const tx = (x) => pad + (x - minX) * sc, ty = (y) => H - (pad + (y - minY) * sc);
+    for (let i = 0; i < rel.xy_m.length; i++) {
+      const id = rel.device_ids[i], me = id === state.deviceId;
+      const x = tx(rel.xy_m[i][0]), y = ty(rel.xy_m[i][1]);
+      ctx.beginPath(); ctx.arc(x, y, me ? 7 : 5, 0, 2 * Math.PI);
+      ctx.fillStyle = me ? "#4da3ff" : "#cfd8ee"; ctx.fill();
+      ctx.fillStyle = "#aeb8d4"; ctx.font = "11px system-ui"; ctx.textAlign = "center";
+      ctx.fillText(_devName(id), x, y - 10);
+    }
+    ctx.fillStyle = "#6b7796"; ctx.font = "10px system-ui"; ctx.textAlign = "left";
+    ctx.fillText("relative layout (m)", 6, H - 6);
+  }
 
   // Map controls + share
   els.placeBtn.addEventListener("click", togglePlace);

@@ -4,9 +4,13 @@ A single :class:`~http.server.ThreadingHTTPServer` (no new Python deps) speaks t
 protocol from ``docs/webapp_contract.md``:
 
 - ``POST /api/join``    -> assign a ``device_id``, register it, return ``{device_id, params}``
-- ``POST /api/report``  -> hand the report body to the Session, return ``{"ok": true}``
+- ``POST /api/report``  -> hand the *full* report body to the Session, return ``{"ok": true}``
+  (the body may carry an optional ``ranging`` array of SDS-TWR half-exchanges; it is
+  forwarded verbatim and consumed by ``Session.report``)
 - ``GET  /api/events``  -> Server-Sent Events; push ``session.state()`` every
-  ``report_interval_s`` (pruning stale devices each tick)
+  ``report_interval_s`` (pruning stale devices each tick). The snapshot is serialized
+  whole, so any keys the Session adds — including ``command`` / ``distances`` /
+  ``relative`` for acoustic ranging — flow through unchanged.
 - static files: ``GET /`` -> ``static/index.html``; ``GET /app.js`` / ``GET /app.css``
   -> from ``static/`` (tolerating not-yet-written files with a clean 404)
 

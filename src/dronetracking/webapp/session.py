@@ -12,9 +12,22 @@ Two derived quantities are computed on demand:
 
 **Positioning.** A device with a GPS fix is placed at its lat/lon
 (``computed.positioning == "gps"``). With no fix its position is ``null``.
-(Acoustic ranging could place GPS-denied devices via :mod:`estimation`, but the
-browser path does not produce ranging data, so that branch is left to the
-offline pipeline.)
+
+**Relative localization by acoustic ranging (GPS-free).** Devices measure their
+pairwise *distances* acoustically (SDS-TWR; see :mod:`dronetracking.webapp.ranging`).
+The session owns a :class:`~dronetracking.webapp.ranging.RangingCoordinator` that
+schedules rounds and accumulates per-pair distances. :func:`Session.state` then
+emits, on top of the energy-source fields:
+
+* ``command`` — the current ranging instruction (which ordered pair should chirp
+  next, and with what chirp), or ``None``;
+* ``distances`` — the latest measured pairwise distances ``[{a, b, m}]``;
+* ``relative`` — once ``>= 3`` online devices share a (near-)complete distance
+  set, the recovered relative layout ``{device_ids, xy_m}`` from the MDS pipeline
+  (:func:`estimation.relative_localization.estimate_layout`), centered and (when
+  GPS devices are present) rigidly aligned to them via :func:`transforms.umeyama`.
+  For exactly ``2`` devices with a measured distance, ``relative`` is ``None`` and
+  the single distance appears in ``distances``.
 
 **Source localization by acoustic energy (sync-free).** This is the key method
 and needs *no* clock synchronization — only received levels and positions. For a
@@ -50,7 +63,9 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 from scipy.optimize import least_squares
 
-from .. import geo
+from .. import geo, transforms
+from ..estimation.relative_localization import estimate_layout
+from .ranging import RangingCoordinator
 
 # Power-model softening: P = A / (r**2 + EPS). Keeps the model finite when a
 # device sits essentially on top of the source. Small vs. field-scale r**2.
@@ -125,6 +140,9 @@ class Session:
     def __init__(self, time_fn: Callable[[], float] = time.monotonic) -> None:
         self._time_fn = time_fn
         self._devices: Dict[str, _Device] = {}
+        # Acoustic-ranging brain: schedules SDS-TWR rounds across online pairs and
+        # accumulates the pairwise distances reported back by devices.
+        self._ranging = RangingCoordinator()
 
     # ------------------------------------------------------------------ #
     # Mutation
@@ -183,6 +201,17 @@ class Session:
         if audio is not None:
             dev.last_audio = audio
             dev.has_mic = True
+
+        # Acoustic-ranging half-exchanges (optional). The coordinator pairs the
+        # two halves of a round and turns completed rounds into distances.
+        ranging = payload.get("ranging")
+        if ranging:
+            try:
+                self._ranging.submit(device_id, list(ranging))
+            except Exception:
+                # A malformed ranging payload must never break a report — the
+                # coordinator already skips bad entries; this guards the rest.
+                pass
 
     def prune(self, max_age_s: float = 5.0) -> None:
         """Drop devices whose last report is older than ``max_age_s`` seconds."""
@@ -246,13 +275,122 @@ class Session:
         computed = {"positioning": positioning, "source": fit.kind}
         note = self._note(network, positioning, fit)
 
+        # --- acoustic ranging: command, measured distances, relative layout --- #
+        online_ids = [d.device_id for d in online_devices]
+        command = {"ranging": self._ranging.current_command(online_ids, now)}
+        distances = self._ranging.distances()
+        relative = self._relative_layout(online_devices)
+
         return {
             "devices": device_views,
             "source": fit.source,
             "network": network,
             "computed": computed,
             "note": note,
+            "command": command,
+            "distances": distances,
+            "relative": relative,
         }
+
+    # ------------------------------------------------------------------ #
+    # Derived: relative localization from acoustic ranging
+    # ------------------------------------------------------------------ #
+    def _relative_layout(self, online_devices: List[_Device]) -> Optional[dict]:
+        """Recover a 2-D relative layout from measured pairwise distances.
+
+        Returns ``{"device_ids": [...], "xy_m": [[x, y], ...]}`` (centered;
+        arbitrary rotation unless GPS-aligned) once ``>= 3`` online devices share
+        a near-complete distance set, else ``None``. For exactly 2 devices the
+        single distance is surfaced via ``state()["distances"]`` instead, so no
+        layout is emitted here.
+
+        Selection: keep online devices that are each connected (by a measured
+        distance) to at least two *other kept* devices, so every emitted node is
+        constrained in the plane. The MDS pipeline
+        (:func:`estimation.relative_localization.estimate_layout`) then turns the
+        sub-:class:`DistanceMatrix` into a 3-D embedding; we take its ``x, y``.
+        When some kept devices have a GPS fix we rigidly align (Umeyama, no
+        scaling) the relative cloud onto their ENU positions so the layout shares
+        the GPS frame; otherwise we emit the bare centered layout.
+        """
+        online_ids = [d.device_id for d in online_devices]
+        if len(online_ids) < 3:
+            return None
+
+        # Iteratively drop devices with < 2 in-subset measured edges until the
+        # kept set is stable (a node with one edge is unconstrained in 2-D).
+        kept = list(online_ids)
+        while True:
+            dm = self._ranging.distance_matrix(kept)
+            degree = (np.sum(dm.valid, axis=1) - 1).astype(int)  # exclude diagonal
+            survivors = [did for did, deg in zip(kept, degree) if deg >= 2]
+            if len(survivors) == len(kept):
+                break
+            kept = survivors
+            if len(kept) < 3:
+                return None
+
+        dm = self._ranging.distance_matrix(kept)
+        # Need enough measured edges for a non-degenerate 2-D constellation.
+        if dm.n_valid_edges < 3:
+            return None
+
+        try:
+            layout = estimate_layout(dm)
+        except Exception:
+            return None
+
+        xy = np.asarray(layout.positions_local, dtype=float)[:, :2]
+        xy = xy - xy.mean(axis=0, keepdims=True)  # center
+        if not np.all(np.isfinite(xy)):
+            return None
+
+        xy = self._maybe_align_to_gps(kept, xy)
+
+        return {
+            "device_ids": list(kept),
+            "xy_m": [[float(x), float(y)] for x, y in xy],
+        }
+
+    def _maybe_align_to_gps(self, ids: List[str], xy: np.ndarray) -> np.ndarray:
+        """Rigidly align the relative cloud onto any GPS fixes among ``ids``.
+
+        Devices with a lat/lon are projected to a shared ENU frame about their
+        centroid; :func:`transforms.umeyama` (rotation + translation, reflection
+        allowed since distances are chirality-blind, no scaling — ranging already
+        sets the metric scale) maps the relative ``xy`` onto those ENU points. The
+        whole cloud is transformed so GPS-denied devices land in the GPS frame
+        too. With fewer than two GPS anchors the bare relative layout is returned.
+        """
+        gps_idx = []
+        gps_ll = []
+        for k, did in enumerate(ids):
+            dev = self._devices.get(did)
+            ll = dev.latlon if dev is not None else None
+            if ll is not None:
+                gps_idx.append(k)
+                gps_ll.append(ll)
+        if len(gps_idx) < 2:
+            return xy
+
+        lats = np.array([ll[0] for ll in gps_ll], dtype=float)
+        lons = np.array([ll[1] for ll in gps_ll], dtype=float)
+        origin = (float(lats.mean()), float(lons.mean()))
+        east, north = geo.latlon_to_enu(lats, lons, origin)
+        dst = np.column_stack(
+            [np.asarray(east, dtype=float), np.asarray(north, dtype=float)]
+        )
+        src = xy[gps_idx, :]
+        try:
+            sim = transforms.umeyama(
+                src, dst, with_scaling=False, allow_reflection=True
+            )
+            aligned = sim.apply(xy)
+        except Exception:
+            return xy
+        if not np.all(np.isfinite(aligned)):
+            return xy
+        return np.asarray(aligned, dtype=float)
 
     # ------------------------------------------------------------------ #
     # Derived: positioning

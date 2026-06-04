@@ -120,7 +120,17 @@ def test_state_shape_is_contract_compliant():
     s.upsert_device("d1", "Alice")
     out = s.state()
 
-    assert set(out.keys()) == {"devices", "source", "network", "computed", "note"}
+    assert set(out.keys()) == {
+        "devices",
+        "source",
+        "network",
+        "computed",
+        "note",
+        # Acoustic-ranging keys added by the ranging-backend contract (section A).
+        "command",
+        "distances",
+        "relative",
+    }
     assert isinstance(out["devices"], list)
     assert isinstance(out["note"], str)
 
