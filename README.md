@@ -35,10 +35,24 @@ python -m pip install -U pip && python -m pip install -e ".[dev]"
 python -m dronetracking.run --scenario scenarios/field_5dev.yaml
 open output/field_5dev_map.html
 
+# LIVE dashboard — watch a scenario stream in real time in your browser:
+python -m dronetracking.live --scenario scenarios/multi_drone.yaml --speed 2
+# then open http://127.0.0.1:8000
+
 # Tests (the real acceptance gate):
 pytest -m "not slow"          # fast inner loop
 pytest                        # everything, incl. end-to-end
 ```
+
+### Live / streaming mode
+
+`python -m dronetracking.live` runs the **streaming engine**: it calibrates the network
+once (relative geometry, clocks, georeference), then processes drone emissions *one at a
+time in time order* — updating the tracks incrementally and pushing a state snapshot per
+step to a browser Leaflet map over Server-Sent Events. This is the hardware-facing shape
+of the system: when real devices replace the simulator, only the engine's data source
+changes — the dashboard is unchanged. `--speed N` accelerates playback; `--detect` drives
+it from synthesized audio.
 
 ## Results (iteration 1)
 
