@@ -61,6 +61,7 @@ class Track:
     positions_local: np.ndarray  # (T, 3)
     covariances: np.ndarray  # (T, 3, 3)
     velocities: Optional[np.ndarray] = None  # (T, 3)
+    target_id: Optional[str] = None  # set by the multi-target tracker (Ph6)
 
     @property
     def final_position(self) -> np.ndarray:

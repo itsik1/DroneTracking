@@ -18,11 +18,17 @@ LatLon = Tuple[float, float]
 @dataclass(frozen=True)
 class DeviceSpec:
     id: str
-    position_m: Vec3  # true (x, y, z) in local ENU meters about the scenario origin
+    position_m: Vec3  # true (x, y, z) at t=0, in local ENU meters about the scenario origin
     clock_offset_s: float = 0.0  # b_i: bias at t=0
     clock_drift_ppm: float = 0.0  # s_i in parts-per-million (local = t*(1+s) + b)
     proc_delay_s: float = 0.002  # deliberate two-way-ranging turnaround delay
     has_gps: bool = False  # is this a georeferencing anchor?
+    velocity_mps: Vec3 = (0.0, 0.0, 0.0)  # constant velocity for moving-device scenarios (Ph3)
+
+    def position_at(self, t: float) -> Vec3:
+        """True position at time ``t`` (constant-velocity drift; static by default)."""
+        p, v = self.position_m, self.velocity_mps
+        return (p[0] + v[0] * t, p[1] + v[1] * t, p[2] + v[2] * t)
 
 
 @dataclass(frozen=True)
@@ -51,8 +57,12 @@ class Scenario:
     ranging_rounds: int  # two-way ranging exchanges per device pair
     origin_latlon: LatLon  # ENU tangent-plane origin (defines anchors' real-world frame)
     devices: Tuple[DeviceSpec, ...]
-    trajectory: TrajectorySpec
+    trajectory: TrajectorySpec  # the primary drone (target 0)
     noise: NoiseSpec = field(default_factory=NoiseSpec)
+    # --- iteration-2 optional fields (all default-off, backward compatible) ---
+    extra_drones: Tuple[TrajectorySpec, ...] = ()  # additional targets (Ph6 multi-target)
+    gps_blackout: Tuple[Tuple[float, float], ...] = ()  # (start,end) GPS-denied windows (Ph9)
+    audio: Dict = field(default_factory=dict)  # acoustic-synthesis params (Ph4 detection)
 
     @property
     def device_ids(self) -> Tuple[str, ...]:
@@ -61,3 +71,16 @@ class Scenario:
     @property
     def anchors(self) -> Tuple[DeviceSpec, ...]:
         return tuple(d for d in self.devices if d.has_gps)
+
+    @property
+    def all_drones(self) -> Tuple[TrajectorySpec, ...]:
+        """Every target trajectory: the primary plus any extras."""
+        return (self.trajectory,) + tuple(self.extra_drones)
+
+    @property
+    def devices_move(self) -> bool:
+        return any(any(v != 0.0 for v in d.velocity_mps) for d in self.devices)
+
+    def gps_available(self, t: float) -> bool:
+        """True if GPS is usable at time ``t`` (i.e. ``t`` is in no blackout window)."""
+        return not any(a <= t <= b for (a, b) in self.gps_blackout)

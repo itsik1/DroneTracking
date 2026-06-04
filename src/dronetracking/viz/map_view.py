@@ -47,9 +47,11 @@ _ORANGE = "#ff7f0e"  # estimated devices
 _GRAY = "#888888"   # residual lines
 _GREEN = "#2ca02c"  # true track
 _RED = "#d62728"    # estimated track / ellipses
+# Per-target palette for multi-target maps (estimated tracks).
+_TRACK_PALETTE = ["#d62728", "#9467bd", "#17becf", "#bcbd22", "#e377c2", "#8c564b"]
 
 
-def render_map(world, estimates: Estimates, scenario, out_path) -> Path:
+def render_map(world, estimates: Estimates, scenario, out_path, geo_tracks=None) -> Path:
     """Build and save an interactive folium map; return ``Path(out_path)``.
 
     Parameters
@@ -62,6 +64,10 @@ def render_map(world, estimates: Estimates, scenario, out_path) -> Path:
         Scenario-like object; only ``.name`` is read (best-effort) for the title.
     out_path : str | os.PathLike
         Destination HTML file.
+    geo_tracks : list[GeoTrack] | None
+        If given (multi-target), every track is drawn in a distinct color and all true
+        drone tracks (``world.true_tracks``) are shown; otherwise the single estimated
+        track from ``estimates`` is drawn.
     """
     out_path = Path(out_path)
     origin = tuple(world.origin_latlon)
@@ -76,15 +82,59 @@ def render_map(world, estimates: Estimates, scenario, out_path) -> Path:
     _add_true_devices(fmap, world)
     _add_estimated_devices(fmap, world, estimates)
     _add_anchors(fmap, world)
-    _add_true_track(fmap, world)
-    _add_estimated_track(fmap, estimates)
-    _add_confidence_ellipses(fmap, estimates, origin)
+
+    multi = geo_tracks is not None and len(geo_tracks) > 1
+    if multi:
+        _add_multi_true_tracks(fmap, world)
+        _add_multi_estimated_tracks(fmap, geo_tracks, origin)
+    else:
+        _add_true_track(fmap, world)
+        _add_estimated_track(fmap, estimates)
+        _add_confidence_ellipses(fmap, estimates, origin)
 
     folium.LayerControl(collapsed=False).add_to(fmap)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fmap.save(str(out_path))
     return out_path
+
+
+def _add_multi_true_tracks(fmap: folium.Map, world) -> None:
+    """Draw every true drone trajectory (multi-target), one color per source."""
+    fg = folium.FeatureGroup(name="True tracks", show=True)
+    origin = tuple(world.origin_latlon)
+    true_tracks = dict(getattr(world, "true_tracks", {}) or {})
+    for src, track in sorted(true_tracks.items()):
+        track = np.atleast_2d(np.asarray(track, dtype=float))
+        if track.shape[0] < 2:
+            continue
+        lat, lon = geo.enu_to_latlon(track[:, 0], track[:, 1], origin)
+        folium.PolyLine(
+            locations=_stack_latlon(lat, lon), color=_GREEN, weight=3, opacity=0.85,
+            tooltip=f"true drone {src}",
+        ).add_to(fg)
+    fg.add_to(fmap)
+
+
+def _add_multi_estimated_tracks(fmap: folium.Map, geo_tracks, origin) -> None:
+    """Draw every estimated track in its own color (multi-target)."""
+    fg = folium.FeatureGroup(name="Estimated tracks", show=True)
+    for i, gt in enumerate(geo_tracks):
+        color = _TRACK_PALETTE[i % len(_TRACK_PALETTE)]
+        latlon = np.atleast_2d(np.asarray(gt.latlon, dtype=float))
+        if latlon.shape[0] < 2:
+            continue
+        locs = [[float(p[0]), float(p[1])] for p in latlon]
+        tid = getattr(gt, "target_id", None) or f"T{i}"
+        folium.PolyLine(
+            locations=locs, color=color, weight=3, opacity=0.95, dash_array="8,8",
+            tooltip=f"estimated {tid}",
+        ).add_to(fg)
+        folium.CircleMarker(
+            location=locs[-1], radius=5, color=color, fill=True, fill_color=color,
+            tooltip=f"{tid} latest",
+        ).add_to(fg)
+    fg.add_to(fmap)
 
 
 def render_animated_map(world, estimates: Estimates, scenario, out_path) -> Path:

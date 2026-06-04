@@ -63,9 +63,33 @@ Honest findings the simulation surfaced:
 - The noise-free residual (~cm) is the *physical* clock-skew-during-flight ranging bias,
   not numerical error — averaging cannot remove it.
 
+## Results (iteration 2 — Phases 3 / 4 / 6 / 9)
+
+Four more phases, each routed through the same pipeline by scenario feature and asserted
+by `pytest -m slow`:
+
+| phase | scenario | command | result |
+|---|---|---|---|
+| **Multi-target (Ph6)** | `multi_drone.yaml` | `run --scenario scenarios/multi_drone.yaml` | 3/3 drones tracked, GNN association, per-drone RMSE 4.5–8.8 cm |
+| **Acoustic detection (Ph4)** | `detection_demo.yaml` | `run --scenario scenarios/detection_demo.yaml --detect` | drone localized from synthesized audio (matched filter); tracking 2.6 cm |
+| **Moving devices (Ph3)** | `moving_devices.yaml` | `run --scenario scenarios/moving_devices.yaml` | live geometry tracked as devices drift; per-window layout RMSE 0.19 m |
+| **GPS-denied (Ph9)** | `gps_denied.yaml` | `run --scenario scenarios/gps_denied.yaml` | holds local frame through a blackout, smooth re-alignment on return; error bounded ~1.6 m |
+
+How they integrate: `run_pipeline` branches on the scenario — `extra_drones` → multi-target
+association, `velocity_mps` → continuous geometry tracking, `--detect` → DSP detection
+replaces idealized arrivals, `gps_blackout` windows → dead-reckoned-and-blended
+georeferencing. The estimators stay behind the ground-truth firewall.
+
+Findings: matched-filter detection needs emission spacing (`dt_s`) above the cross-device
+range-delay spread or per-device emissions alias; multi-target association is done from
+motion only (sources are not used as identity); moving-device geometry needs ≥4 well-spread
+static anchors to fix the gauge.
+
 ## Scope
 
-Iteration 1 = the estimation core (Phases 2, 5, 6, 7, 8 of the project vision) in
-simulation. Networking (Phase 1), real-audio drone-signature detection (Phase 4),
-multi-target tracking, joint clock+position estimation, and real hardware are deferred
-to later iterations, with seams left in the design for each.
+Iterations 1–2 cover Phases 2–9 of the project vision **in simulation**: relative
+localization, clock-sync-free TDOA, single- and multi-target tracking, acoustic detection,
+continuous geometry under motion, georeferencing, and GPS-denied operation. Still deferred:
+Phase 1 networking/device discovery, joint clock+position estimation, overlapping-source
+acoustic separation, and **real hardware** (the next major leap — real microphones, radios,
+and clocks behind the same interfaces).

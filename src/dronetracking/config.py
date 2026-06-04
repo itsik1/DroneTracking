@@ -37,6 +37,7 @@ def scenario_from_dict(raw: Dict, seed_override: Optional[int] = None) -> Scenar
             clock_drift_ppm=float(d.get("clock_drift_ppm", 0.0)),
             proc_delay_s=float(d.get("proc_delay_s", 0.002)),
             has_gps=bool(d.get("has_gps", False)),
+            velocity_mps=tuple(float(x) for x in d.get("velocity_mps", (0.0, 0.0, 0.0))),
         )
         for d in raw_devices
     )
@@ -45,17 +46,11 @@ def scenario_from_dict(raw: Dict, seed_override: Optional[int] = None) -> Scenar
     if len(set(ids)) != len(ids):
         raise ValueError(f"duplicate device ids in scenario: {ids}")
 
-    traj_raw = raw["trajectory"]
-    trajectory = TrajectorySpec(
-        kind=str(traj_raw["kind"]),
-        params=dict(traj_raw.get("params", {})),
-        z_m=float(traj_raw.get("z_m", 50.0)),
+    trajectory = _parse_trajectory(raw["trajectory"])
+    extra_drones = tuple(_parse_trajectory(t) for t in raw.get("extra_drones", ()))
+    gps_blackout = tuple(
+        (float(w[0]), float(w[1])) for w in raw.get("gps_blackout", ())
     )
-    if trajectory.kind not in _VALID_TRAJECTORY_KINDS:
-        raise ValueError(
-            f"unknown trajectory kind {trajectory.kind!r}; "
-            f"expected one of {sorted(_VALID_TRAJECTORY_KINDS)}"
-        )
 
     noise = NoiseSpec(**(raw.get("noise") or {}))
     seed = seed_override if seed_override is not None else int(raw["seed"])
@@ -73,4 +68,22 @@ def scenario_from_dict(raw: Dict, seed_override: Optional[int] = None) -> Scenar
         devices=devices,
         trajectory=trajectory,
         noise=noise,
+        extra_drones=extra_drones,
+        gps_blackout=gps_blackout,
+        audio=dict(raw.get("audio", {})),
     )
+
+
+def _parse_trajectory(traj_raw: Dict) -> TrajectorySpec:
+    """Build and validate a TrajectorySpec from a raw trajectory dict."""
+    trajectory = TrajectorySpec(
+        kind=str(traj_raw["kind"]),
+        params=dict(traj_raw.get("params", {})),
+        z_m=float(traj_raw.get("z_m", 50.0)),
+    )
+    if trajectory.kind not in _VALID_TRAJECTORY_KINDS:
+        raise ValueError(
+            f"unknown trajectory kind {trajectory.kind!r}; "
+            f"expected one of {sorted(_VALID_TRAJECTORY_KINDS)}"
+        )
+    return trajectory

@@ -33,6 +33,8 @@ class AcousticArrival:
     device_id: str
     emission_idx: int  # groups arrivals from the same emission across devices
     toa_local_s: float
+    source: int = 0  # which target produced it (Ph6 multi-target; 0 = sole drone)
+    confidence: float = 1.0  # detector confidence in [0,1] (Ph4 detection; 1.0 = idealized)
 
 
 @dataclass(frozen=True)

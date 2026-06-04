@@ -34,18 +34,28 @@ _GREEN = "#2ca02c"
 _RED = "#d62728"
 
 
-def save_diagnostics(world, estimates: Estimates, scenario, out_dir) -> List[Path]:
-    """Render the diagnostic PNG set into ``out_dir``; return the written paths."""
+def save_diagnostics(world, estimates: Estimates, scenario, out_dir, geo_tracks=None) -> List[Path]:
+    """Render the diagnostic PNG set into ``out_dir``; return the written paths.
+
+    ``geo_tracks`` (optional): when more than one is given (multi-target), the
+    trajectory and tracking-error plots show every true drone and every estimated
+    track instead of just the single primary pair.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     name = getattr(scenario, "name", "scenario")
+    multi = geo_tracks is not None and len(geo_tracks) > 1
     paths: List[Path] = []
 
     paths.append(_plot_local_frame_devices(world, estimates, name, out_dir))
     paths.append(_plot_device_error_bars(world, estimates, name, out_dir))
-    paths.append(_plot_tracking_error(world, estimates, name, out_dir))
-    paths.append(_plot_trajectory_topdown(world, estimates, name, out_dir))
+    if multi:
+        paths.append(_plot_tracking_error_multi(world, geo_tracks, name, out_dir))
+        paths.append(_plot_trajectory_topdown_multi(world, geo_tracks, name, out_dir))
+    else:
+        paths.append(_plot_tracking_error(world, estimates, name, out_dir))
+        paths.append(_plot_trajectory_topdown(world, estimates, name, out_dir))
 
     return paths
 
@@ -165,9 +175,102 @@ def _plot_trajectory_topdown(world, estimates: Estimates, name: str, out_dir: Pa
     return _save(fig, out_dir / "trajectory_topdown.png")
 
 
+_MULTI_PALETTE = ["#d62728", "#9467bd", "#17becf", "#bcbd22", "#e377c2", "#8c564b"]
+
+
+def _plot_trajectory_topdown_multi(world, geo_tracks, name: str, out_dir: Path) -> Path:
+    """Top-down view of ALL true drones (green) vs ALL estimated tracks (palette)."""
+    fig, ax = plt.subplots(figsize=(7.5, 6.5))
+    true_tracks = dict(getattr(world, "true_tracks", {}) or {})
+    first = True
+    for _src, tr in sorted(true_tracks.items()):
+        tr = np.atleast_2d(np.asarray(tr, dtype=float))
+        ax.plot(tr[:, 0], tr[:, 1], color=_GREEN, lw=2.2, marker="o", ms=2,
+                label="true" if first else None, zorder=2)
+        first = False
+    for i, gt in enumerate(geo_tracks):
+        enu, _ = _geo_track_enu(world, gt)
+        if enu.size:
+            c = _MULTI_PALETTE[i % len(_MULTI_PALETTE)]
+            tid = getattr(gt, "target_id", None) or f"T{i}"
+            ax.plot(enu[:, 0], enu[:, 1], color=c, lw=1.6, ls="--", marker="x", ms=3,
+                    label=f"est {tid}", zorder=3)
+    ax.set_xlabel("east (m)")
+    ax.set_ylabel("north (m)")
+    ax.set_title(f"Top-down trajectories — {name}")
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    return _save(fig, out_dir / "trajectory_topdown.png")
+
+
+def _plot_tracking_error_multi(world, geo_tracks, name: str, out_dir: Path) -> Path:
+    """Per-target 3D error over time, each estimated track matched to its nearest true drone."""
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    true_tracks = dict(getattr(world, "true_tracks", {}) or {})
+    true_times = np.asarray(world.true_track_times, dtype=float)
+    plotted = False
+    for i, gt in enumerate(geo_tracks):
+        enu, et = _geo_track_enu(world, gt)
+        if enu.size == 0 or not true_tracks:
+            continue
+        best_src = min(true_tracks, key=lambda s: _mean_nearest(enu, np.atleast_2d(np.asarray(true_tracks[s], float))))
+        truth_rs = _resample(np.atleast_2d(np.asarray(true_tracks[best_src], float)), true_times, et)
+        m = min(len(enu), len(truth_rs))
+        if m == 0:
+            continue
+        err = np.linalg.norm(enu[:m] - truth_rs[:m], axis=1)
+        c = _MULTI_PALETTE[i % len(_MULTI_PALETTE)]
+        tid = getattr(gt, "target_id", None) or f"T{i}"
+        ax.plot(et[:m], err, color=c, lw=1.6,
+                label=f"{tid}→drone{best_src} (RMSE {np.sqrt(np.mean(err**2)):.2f} m)")
+        plotted = True
+    if not plotted:
+        ax.text(0.5, 0.5, "no tracks", ha="center", va="center", transform=ax.transAxes)
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel("3D error (m)")
+    ax.set_title(f"Per-target tracking error — {name}")
+    ax.legend(loc="best", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    return _save(fig, out_dir / "tracking_error_over_time.png")
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+
+def _geo_track_enu(world, gt):
+    """A GeoTrack -> (ENU (T,3), times) using the world origin."""
+    latlon = np.atleast_2d(np.asarray(gt.latlon, dtype=float))
+    times = np.atleast_1d(np.asarray(gt.times_s, dtype=float))
+    if latlon.size == 0:
+        return np.empty((0, 3)), times
+    origin = tuple(world.origin_latlon)
+    east, north = geo.latlon_to_enu(latlon[:, 0], latlon[:, 1], origin)
+    east = np.atleast_1d(np.asarray(east, dtype=float))
+    north = np.atleast_1d(np.asarray(north, dtype=float))
+    alt = np.atleast_1d(np.asarray(gt.altitude_m, dtype=float))
+    if alt.shape[0] != east.shape[0]:
+        alt = np.zeros_like(east)
+    return np.column_stack([east, north, alt]), times
+
+
+def _mean_nearest(path: np.ndarray, truth: np.ndarray) -> float:
+    d2 = np.sum((path[:, None, :] - truth[None, :, :]) ** 2, axis=2)
+    return float(np.sqrt(np.mean(np.min(d2, axis=1))))
+
+
+def _resample(track: np.ndarray, src_times: np.ndarray, query_times: np.ndarray) -> np.ndarray:
+    src_times = np.atleast_1d(np.asarray(src_times, dtype=float))
+    query_times = np.atleast_1d(np.asarray(query_times, dtype=float))
+    if track.shape[0] == 0 or src_times.size == 0 or query_times.size == 0:
+        return np.empty((0, 3))
+    if src_times.shape == query_times.shape and np.allclose(src_times, query_times):
+        return track
+    order = np.argsort(src_times)
+    st = src_times[order]
+    return np.column_stack([np.interp(query_times, st, track[order, j]) for j in range(track.shape[1])])
 
 
 def _align(est: np.ndarray, truth: np.ndarray) -> np.ndarray:

@@ -16,6 +16,8 @@ import numpy as np
 
 from .. import geo
 from .acoustic import emission_times, generate_acoustic_arrivals
+from .device_motion import generate_moving_ranging
+from .multi_acoustic import generate_multi_arrivals, true_tracks
 from .observations import AnchorGps, Observations
 from .ranging import generate_ranging_records
 from .scenario import Scenario
@@ -24,13 +26,26 @@ from .world import World
 
 
 def simulate(scenario: Scenario) -> Tuple[Observations, World]:
-    """Run the synthetic world and return the measurements plus the ground truth."""
+    """Run the synthetic world and return the measurements plus the ground truth.
+
+    Honors iteration-2 scenario features: moving devices (``velocity_mps``) switch to
+    time-varying ranging; extra drones (``extra_drones``) switch to multi-target
+    acoustic generation with per-source tags.
+    """
     # One seeded root, split into three independent streams so changing one noise
     # source (e.g. GPS) does not shift the random draws of the others.
     ranging_rng, acoustic_rng, gps_rng = np.random.default_rng(scenario.seed).spawn(3)
 
-    ranging = generate_ranging_records(scenario, ranging_rng)
-    acoustic = generate_acoustic_arrivals(scenario, acoustic_rng)
+    ranging = (
+        generate_moving_ranging(scenario, ranging_rng)
+        if scenario.devices_move
+        else generate_ranging_records(scenario, ranging_rng)
+    )
+    acoustic = (
+        generate_multi_arrivals(scenario, acoustic_rng)
+        if scenario.extra_drones
+        else generate_acoustic_arrivals(scenario, acoustic_rng)
+    )
 
     origin = scenario.origin_latlon
     gps_std = scenario.noise.gps_pos_std_m
@@ -72,6 +87,9 @@ def simulate(scenario: Scenario) -> Tuple[Observations, World]:
     true_track = np.array(
         [trajectory_position(scenario, float(t)) for t in times], dtype=float
     )
+    # Per-source truth: multi-target if extra drones, else just the primary as source 0.
+    tracks_truth = true_tracks(scenario) if scenario.extra_drones else {0: true_track}
+
     world = World(
         device_ids=scenario.device_ids,
         device_positions={
@@ -83,6 +101,10 @@ def simulate(scenario: Scenario) -> Tuple[Observations, World]:
         origin_latlon=origin,
         true_track=true_track,
         true_track_times=times,
+        true_tracks=tracks_truth,
+        device_velocities={
+            d.id: np.asarray(d.velocity_mps, dtype=float) for d in scenario.devices
+        },
     )
 
     return observations, world

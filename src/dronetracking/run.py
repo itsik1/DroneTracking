@@ -29,12 +29,13 @@ def main(argv=None) -> int:
     p.add_argument("--seed", type=int, default=None, help="override the scenario's RNG seed")
     p.add_argument("--model", default="cv", choices=["cv", "ca"], help="tracking motion model")
     p.add_argument("--sigma-a", type=float, default=2.0, help="tracking process-noise accel std")
+    p.add_argument("--detect", action="store_true", help="localize from synthesized audio via DSP detection (Ph4)")
     p.add_argument("--no-map", action="store_true", help="skip the folium map")
     p.add_argument("--no-plots", action="store_true", help="skip the matplotlib diagnostics")
     args = p.parse_args(argv)
 
     scenario = load_scenario(args.scenario, seed_override=args.seed)
-    result = run_pipeline(scenario, model=args.model, sigma_a=args.sigma_a)
+    result = run_pipeline(scenario, model=args.model, sigma_a=args.sigma_a, detect=args.detect)
 
     print_report(result.metrics)
 
@@ -43,12 +44,12 @@ def main(argv=None) -> int:
     metrics_path = save_report(result.metrics, out_dir / f"{scenario.name}_metrics.json")
 
     if not args.no_map:
-        map_path = render_map(result.world, result.estimates, scenario, out_dir / f"{scenario.name}_map.html")
+        map_path = render_map(result.world, result.estimates, scenario, out_dir / f"{scenario.name}_map.html", geo_tracks=result.geo_tracks)
         anim_path = render_animated_map(result.world, result.estimates, scenario, out_dir / f"{scenario.name}_animated.html")
         print(f"\nmap:     {map_path}")
         print(f"animated:{anim_path}")
     if not args.no_plots:
-        plot_paths = save_diagnostics(result.world, result.estimates, scenario, out_dir)
+        plot_paths = save_diagnostics(result.world, result.estimates, scenario, out_dir, geo_tracks=result.geo_tracks)
         print(f"plots:   {len(plot_paths)} written to {out_dir}/")
     print(f"metrics: {metrics_path}")
     return 0
