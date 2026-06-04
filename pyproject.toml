@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib>=3.7",
     "folium>=0.15",
     "pyyaml>=6.0",
+    "qrcode>=7.0",
 ]
 
 [project.optional-dependencies]
