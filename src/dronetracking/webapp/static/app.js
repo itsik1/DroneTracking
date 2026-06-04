@@ -42,9 +42,11 @@
     micState: "off",         // off | on | denied
 
     // location
-    gps: null,               // latest {lat, lon, accuracy_m}
+    gps: null,               // latest {lat, lon, accuracy_m} from the Geolocation API
     gpsWatchId: null,
     gpsState: "off",         // off | on | denied
+    manualPos: null,         // {lat, lon, accuracy_m} set by tapping the map (overrides gps)
+    placing: false,          // tap-to-place mode active
 
     // networking
     reportTimer: null,
@@ -67,6 +69,9 @@
     compPos: $("compPos"), compSrc: $("compSrc"),
     sourceInfo: $("sourceInfo"), sourceErr: $("sourceErr"), sourceConf: $("sourceConf"),
     note: $("note"),
+    deviceList: $("deviceList"),
+    placeBtn: $("placeBtn"), centerBtn: $("centerBtn"), qrBtn: $("qrBtn"),
+    qrModal: $("qrModal"), qrCanvas: $("qrCanvas"), qrUrl: $("qrUrl"), qrClose: $("qrClose"),
     gate: $("gate"), nameInput: $("nameInput"), startBtn: $("startBtn"),
     gateError: $("gateError"),
     toasts: $("toasts"),
@@ -320,7 +325,7 @@
     const body = {
       device_id: state.deviceId,
       t_client_ms: Date.now(),
-      gps: state.gps, // {lat, lon, accuracy_m} or null
+      gps: state.manualPos || state.gps, // manual tap overrides GPS (e.g. a laptop with no GPS)
       audio: state.audio, // {level, detected, confidence, peak_hz} or null
     };
     try {
@@ -369,7 +374,7 @@
   let tileLayer = null;
   const devLayers = new Map(); // id -> {marker}
   let sourceMarker = null, sourceCircle = null;
-  let didAutoFit = false;
+  let lastFitCount = 0;
 
   function initMap() {
     map = L.map("map", { zoomControl: true, attributionControl: true })
@@ -378,6 +383,7 @@
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(map);
+    map.on("click", onMapClick); // tap-to-place when in placing mode
     // Recompute spectrogram size if the layout settled after map init.
     setTimeout(() => { if (state.analyser) setupSpectro(); }, 200);
   }
@@ -425,6 +431,7 @@
 
     // --- devices on the map ---
     const devices = Array.isArray(snap.devices) ? snap.devices : [];
+    renderDeviceList(devices); // textual list so every device sees who's connected (even with no position)
     const seen = new Set();
     const positioned = [];
 
@@ -466,11 +473,104 @@
     // --- auto-fit once we have positions ---
     const fitPoints = positioned.slice();
     if (snap.source && snap.source.lat != null) fitPoints.push([snap.source.lat, snap.source.lon]);
-    if (!didAutoFit && fitPoints.length > 0) {
+    // Re-fit whenever the set of positioned points grows (a new device joins / gets placed).
+    if (fitPoints.length > lastFitCount) {
       fitToPoints(fitPoints);
-      didAutoFit = true;
+      lastFitCount = fitPoints.length;
     }
   }
+
+  // --- connected-devices list (shows everyone, positioned or not) ---
+  function renderDeviceList(devices) {
+    const list = els.deviceList;
+    if (!list) return;
+    if (!devices.length) {
+      list.innerHTML = '<div class="dev-item off"><span class="dev-name">no devices yet…</span></div>';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const d of devices) {
+      const me = d.id === state.deviceId;
+      const online = d.online !== false;
+      const pos = d.lat != null && d.lon != null;
+      const row = document.createElement("div");
+      row.className = "dev-item" + (me ? " me" : "") + (online ? "" : " off");
+
+      const dot = document.createElement("span");
+      dot.className = "dev-dot";
+      dot.style.background = d.detected ? "#ff8a3d" : levelColor(d.level || 0);
+
+      const name = document.createElement("span");
+      name.className = "dev-name";
+      name.textContent = (d.name || d.id) + (me ? " (you)" : "");
+
+      const badges = document.createElement("span");
+      badges.className = "dev-badges";
+      badges.innerHTML =
+        `<span class="dev-badge ${d.has_mic ? "on" : ""}">mic</span>` +
+        `<span class="dev-badge ${pos ? "on" : ""}">${pos ? "pos" : "no pos"}</span>` +
+        (d.detected ? `<span class="dev-badge det">hears it</span>` : "");
+
+      row.appendChild(dot);
+      row.appendChild(name);
+      row.appendChild(badges);
+      frag.appendChild(row);
+    }
+    list.innerHTML = "";
+    list.appendChild(frag);
+  }
+
+  // --- manual placement / recenter / QR ---
+  const round6 = (x) => Math.round(x * 1e6) / 1e6;
+
+  function onMapClick(e) {
+    if (!state.placing || !e || !e.latlng) return;
+    state.manualPos = { lat: round6(e.latlng.lat), lon: round6(e.latlng.lng), accuracy_m: 0 };
+    state.placing = false;
+    els.placeBtn.classList.remove("active");
+    els.placeBtn.textContent = "📍 Move me";
+    if (state.gpsState !== "on") { state.gpsState = "on"; renderCaps(); }
+    toast("Placed on the map", "good");
+    lastFitCount = 0;     // allow a re-fit to include the new point
+    sendReport();         // reflect immediately
+  }
+
+  function togglePlace() {
+    state.placing = !state.placing;
+    els.placeBtn.classList.toggle("active", state.placing);
+    els.placeBtn.textContent = state.placing ? "tap the map…" : (state.manualPos ? "📍 Move me" : "📍 Place me");
+    if (state.placing) toast("Tap the map where this device is", "", 4000);
+  }
+
+  function centerOnMe() {
+    const p = state.manualPos || state.gps;
+    if (p && map) map.setView([p.lat, p.lon], 18);
+    else toast("No position yet — enable location, or tap “Place me”", "warn");
+  }
+
+  function openQR() {
+    const url = window.location.href;
+    els.qrUrl.textContent = url;
+    els.qrCanvas.innerHTML = "";
+    if (window.QRCode) {
+      try {
+        new window.QRCode(els.qrCanvas, {
+          text: url, width: 220, height: 220,
+          correctLevel: window.QRCode.CorrectLevel ? window.QRCode.CorrectLevel.M : undefined,
+        });
+      } catch (_) { qrFallback(url); }
+    } else {
+      qrFallback(url);
+    }
+    els.qrModal.classList.remove("hidden");
+  }
+  function qrFallback(url) {
+    const img = document.createElement("img");
+    img.width = 220; img.height = 220; img.alt = "QR";
+    img.src = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=" + encodeURIComponent(url);
+    els.qrCanvas.appendChild(img);
+  }
+  function closeQR() { els.qrModal.classList.add("hidden"); }
 
   function removeDevLayer(id) {
     const e = devLayers.get(id);
@@ -649,6 +749,13 @@
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && state.started && state.deviceId) sendReport();
   });
+
+  // Map controls + share
+  els.placeBtn.addEventListener("click", togglePlace);
+  els.centerBtn.addEventListener("click", centerOnMe);
+  els.qrBtn.addEventListener("click", openQR);
+  els.qrClose.addEventListener("click", closeQR);
+  els.qrModal.addEventListener("click", (e) => { if (e.target === els.qrModal) closeQR(); });
 
   renderConn();
   renderCaps();
