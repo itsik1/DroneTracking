@@ -44,6 +44,31 @@ pytest -m "not slow"          # fast inner loop
 pytest                        # everything, incl. end-to-end
 ```
 
+### Zero-install web app (PC + phone — just a browser)
+
+The devices install nothing: they open a URL and grant mic + location. Only the PC running
+the coordinator needs the repo/venv.
+
+```bash
+python -m dronetracking.webapp                 # serves http://localhost:8000 (open on the PC)
+# phones need an https link for mic access — either:
+python -m dronetracking.webapp --https         # self-signed cert; open https://<pc-ip>:8000 and accept the warning
+#   or a clean public https link via a tunnel:  cloudflared tunnel --url http://localhost:8000
+```
+
+Every device that opens the page becomes a node — it captures its microphone (level +
+drone/sound detection + a live spectrogram) and its GPS, and reports to the coordinator,
+which does **whatever the connected devices allow**, live on a shared map:
+
+- **1 device** → live detection + level
+- **2 devices** → + a coarse source region
+- **3+ devices with GPS** → an **energy-multilaterated source fix** on the map
+
+Source localization uses received **sound level** (∝ 1/distance), so it is **sync-free** and
+works on ordinary phones — no clock sync needed. Positions come from GPS; acoustic ranging
+remains the GPS-denied fallback. (Verified end-to-end: 4 simulated devices → source within
+~14 m; real accuracy depends on device mics.)
+
 ### Live / streaming mode
 
 `python -m dronetracking.live` runs the **streaming engine**: it calibrates the network
