@@ -32,6 +32,8 @@ def main(argv=None) -> int:
     p.add_argument("--port", type=int, default=0, help="0 = OS-assigned free port")
     p.add_argument("--timeout", type=float, default=15.0)
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--external", action="store_true",
+                   help="don't spawn internal sim agents; wait for external `python -m dronetracking.device` processes")
     args = p.parse_args(argv)
 
     scenario = load_scenario(args.scenario, seed_override=args.seed)
@@ -46,19 +48,26 @@ def main(argv=None) -> int:
     )
     collector.start()
 
-    agents = []
-    for did in device_ids:
-        th = threading.Thread(
-            target=DeviceAgent().publish,
-            args=(args.host, feed.port, scenario, did),
-            kwargs={"feed": shared},
-            daemon=True,
-        )
-        th.start()
-        agents.append(th)
-    for th in agents:
-        th.join(timeout=args.timeout)
-    collector.join(timeout=args.timeout)
+    if args.external:
+        # Real deployment: each device runs `python -m dronetracking.device` and connects here.
+        print(f"waiting up to {args.timeout:.0f}s for {len(device_ids)} external device agents — run, per device:")
+        print(f"  python -m dronetracking.device --coordinator {args.host}:{feed.port} --scenario <file> --id <devN>")
+        collector.join(timeout=args.timeout + 5)
+    else:
+        # Demo: spawn the simulated device agents in-process.
+        agents = []
+        for did in device_ids:
+            th = threading.Thread(
+                target=DeviceAgent().publish,
+                args=(args.host, feed.port, scenario, did),
+                kwargs={"feed": shared},
+                daemon=True,
+            )
+            th.start()
+            agents.append(th)
+        for th in agents:
+            th.join(timeout=args.timeout)
+        collector.join(timeout=args.timeout)
 
     obs, ref = feed.as_observations(), shared.as_observations()
     matches = (

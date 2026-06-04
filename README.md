@@ -54,6 +54,24 @@ of the system: when real devices replace the simulator, only the engine's data s
 changes — the dashboard is unchanged. `--speed N` accelerates playback; `--detect` drives
 it from synthesized audio.
 
+### On-device / distributed runtime
+
+Run a genuinely distributed deployment — a coordinator plus one process per device, over TCP:
+
+```bash
+# terminal 1 — coordinator (listen-only, waits for external devices):
+python -m dronetracking.live.coordinator --scenario scenarios/detection_demo.yaml --port 9123 --external
+# terminals 2..N — one per device (each captures, detects the drone, and publishes):
+python -m dronetracking.device --coordinator 127.0.0.1:9123 --scenario scenarios/detection_demo.yaml --id dev0
+```
+
+Each `dronetracking.device` process captures audio through a `CaptureBackend`, detects the
+drone, and publishes its own measurements; the coordinator reassembles them and runs the
+pipeline. The default backend is sim-driven (`MockBackend`); `--real` selects
+`SoundDeviceBackend` (a real microphone via `sounddevice`). That swap — mock → real mic — is
+the only change between this simulated run and real devices. See
+[`docs/hardware_bringup.md`](docs/hardware_bringup.md).
+
 ## Results (iteration 1)
 
 Measured against ground truth (`pytest -m slow` asserts these stay in tolerance):
