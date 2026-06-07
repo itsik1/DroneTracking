@@ -137,10 +137,15 @@ class RangingCoordinator:
         speed_of_sound_mps: float = SPEED_OF_SOUND_MPS,
         round_period_s: float = ROUND_PERIOD_S,
         chirp: Optional[dict] = None,
+        debug: bool = False,
     ) -> None:
         self._c = float(speed_of_sound_mps)
         self._round_period_s = float(round_period_s)
         self._chirp = dict(chirp) if chirp is not None else dict(DEFAULT_CHIRP)
+        # When True, print one line per stored half-exchange and per finalized round
+        # (raw distance + accept/reject reason) so `--debug` can localize where ranging
+        # breaks: no halves heard, halves that never pair, or distances gated out.
+        self._debug = bool(debug)
 
         # round number -> accumulating half-exchanges
         self._rounds: Dict[int, _Round] = {}
@@ -267,6 +272,14 @@ class RangingCoordinator:
                 # A half missing/garbling its timestamps: leave the round pending.
                 continue
 
+            if self._debug:
+                if role == "init":
+                    print(f"[rng] half stored: round {rnd} role=init  from={device_id} "
+                          f"t1={rec.t1} t4={rec.t4}")
+                else:
+                    print(f"[rng] half stored: round {rnd} role=resp  from={device_id} "
+                          f"t2={rec.t2} t3={rec.t3}")
+
             self._maybe_finalize(rnd)
 
     def _maybe_finalize(self, rnd: int) -> None:
@@ -277,14 +290,25 @@ class RangingCoordinator:
         if rec.init_device == rec.resp_device:
             # A device cannot range against itself; drop the degenerate round.
             rec.consumed = True
+            if self._debug:
+                print(f"[rng] round {rnd}: DROPPED (self-pair {rec.init_device})")
             return
 
         d = sds_twr_distance(rec.t1, rec.t2, rec.t3, rec.t4, self._c)
         rec.consumed = True
         if not np.isfinite(d) or d < 0.0 or d > MAX_PLAUSIBLE_DISTANCE_M:
+            if self._debug:
+                reason = ("non-finite" if not np.isfinite(d)
+                          else "negative" if d < 0.0 else ">max")
+                print(f"[rng] round {rnd}: {rec.init_device}<->{rec.resp_device} "
+                      f"raw={d:.2f}m REJECTED ({reason})")
             return  # implausible (missed peak / wrong reply): don't poison the pair
         key = _pair_key(rec.init_device, rec.resp_device)
         self._samples.setdefault(key, []).append(float(d))
+        if self._debug:
+            print(f"[rng] round {rnd}: {rec.init_device}<->{rec.resp_device} "
+                  f"raw={d:.2f}m ACCEPTED (median now "
+                  f"{float(np.median(self._samples[key])):.2f}m over {len(self._samples[key])})")
 
     # ------------------------------------------------------------------ #
     # Outputs

@@ -135,7 +135,7 @@ def main(argv=None) -> int:
     except ImportError as exc:  # pragma: no cover
         print(f"ERROR: webapp.session.Session unavailable ({exc})", file=sys.stderr)
         return 1
-    session = Session()
+    session = Session(debug=args.debug)
 
     # --- tunnel mode: run a local HTTP server in a thread, expose it via cloudflared ---
     if args.tunnel:

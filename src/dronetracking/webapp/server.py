@@ -51,10 +51,11 @@ def _log_report(body: dict) -> None:
              f"det={'Y' if audio.get('detected') else '-'}"]
     for e in (body.get("ranging") or []):
         role = e.get("role")
+        rnd = e.get("round")
         if role == "init":
-            parts.append(f"rng:init t1={e.get('t1')} t4={e.get('t4')}")
+            parts.append(f"rng:init r{rnd} t1={e.get('t1')} t4={e.get('t4')}")
         elif role == "resp":
-            parts.append(f"rng:resp t2={e.get('t2')} t3={e.get('t3')}")
+            parts.append(f"rng:resp r{rnd} t2={e.get('t2')} t3={e.get('t3')}")
     print(f"[{time.strftime('%H:%M:%S')}] report {did} " + " ".join(parts))
 
 # Content types for the (small, fixed) set of static assets we serve.

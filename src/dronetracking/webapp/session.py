@@ -137,12 +137,17 @@ class Session:
         in tests to make last-seen / pruning deterministic.
     """
 
-    def __init__(self, time_fn: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        time_fn: Callable[[], float] = time.monotonic,
+        debug: bool = False,
+    ) -> None:
         self._time_fn = time_fn
         self._devices: Dict[str, _Device] = {}
         # Acoustic-ranging brain: schedules SDS-TWR rounds across online pairs and
-        # accumulates the pairwise distances reported back by devices.
-        self._ranging = RangingCoordinator()
+        # accumulates the pairwise distances reported back by devices. `debug` makes
+        # it log each stored half and each finalized round (raw distance + verdict).
+        self._ranging = RangingCoordinator(debug=debug)
 
     # ------------------------------------------------------------------ #
     # Mutation
