@@ -45,9 +45,11 @@ from ..datatypes import DistanceMatrix
 # Nominal speed of sound in air (~20 C). The frontend and tests share this value.
 SPEED_OF_SOUND_MPS = 343.0
 
-# Default chirp the coordinator instructs devices to emit: a short linear sweep
-# in a band that survives phone speakers/mics yet stays cross-correlatable.
-DEFAULT_CHIRP = {"f0": 1500.0, "f1": 4500.0, "dur_s": 0.05}
+# Default chirp the coordinator instructs devices to emit: a short linear sweep in a
+# NEAR-ULTRASONIC band (~18-20 kHz) — inaudible to most people but still within phone
+# speaker/mic range and cross-correlatable. (May need per-device tuning; some speakers
+# roll off above ~20 kHz and Nyquist is ~22 kHz at a 44.1 kHz sample rate.)
+DEFAULT_CHIRP = {"f0": 18000.0, "f1": 20000.0, "dur_s": 0.06}
 
 # How long each round (one ordered pair) stays the active instruction before the
 # schedule advances to the next pair. A few seconds gives the browser time to

@@ -29,13 +29,15 @@
   //   chirp:{f0,f1,dur_s}}. We POST half-exchanges in report.ranging:
   //   init -> {round, role:"init", t1, t4}; resp -> {round, role:"resp", t2, t3}.
   // distance = c * ((t4-t1) - (t3-t2)) / 2. All times are AudioContext.currentTime (s).
-  const RESPONDER_TURNAROUND_S = 0.15;   // fixed B-local delay between hearing (t2) and replying (t3)
-  const RING_SECONDS = 1.5;              // rolling mic capture window we cross-correlate against
+  const RESPONDER_TURNAROUND_S = 0.25;   // B waits this after hearing (t2) before replying (t3);
+                                         // long enough to clear A's own-chirp reverb before the reply
+  const RING_SECONDS = 2.5;              // rolling mic capture window we cross-correlate against
   const CAPTURE_FRAME = 2048;            // ScriptProcessor block size (mono samples per callback)
-  const REPLY_WAIT_S = 0.9;              // initiator: how long to listen for the reply chirp after emit
-  const INCOMING_WAIT_S = 1.6;           // responder: how long to listen for the incoming chirp
+  const REPLY_WAIT_S = 0.8;              // initiator: listen this long (after the turnaround) for the reply
+  const INCOMING_WAIT_S = 2.2;           // responder: poll up to this long for the incoming chirp
+  const POLL_MS = 60;                    // responder detection poll cadence (detect early -> reply promptly)
   const XCORR_MIN_SCORE = 0.10;          // normalized correlation peak must clear this to count as an arrival
-  const RANGING_STATUS_MS = 1800;        // how long the "Ranging…" pill stays lit after activity
+  const RANGING_STATUS_MS = 2600;        // how long the ranging status text stays lit after activity
 
   // ------------------------------------------------------------------ state
   const state = {
@@ -866,11 +868,16 @@
     } catch (_) { return at; }
   }
 
-  function setRangingStatus() { state.ranging.statusUntil = Date.now() + RANGING_STATUS_MS; }
+  function rangeLog(msg, toastIt) {
+    state.ranging.statusMsg = msg;
+    state.ranging.statusUntil = Date.now() + RANGING_STATUS_MS;
+    if (toastIt) toast("📡 " + msg, "", 2600);
+    updateRangeStatus();
+  }
   function updateRangeStatus() {
     const el = els.rangeStatus; if (!el) return;
     const active = Date.now() < state.ranging.statusUntil;
-    el.textContent = active ? "ranging…" : "idle";
+    el.textContent = active ? (state.ranging.statusMsg || "ranging…") : "idle";
     el.className = "tag " + (active ? "ranging" : "none");
   }
 
@@ -879,30 +886,43 @@
     const r = state.ranging, ctx = state.audioCtx, me = state.deviceId;
     if (!cmd || !ctx || !r.ring || r.busy || cmd.round === r.lastRound) return;
     if (cmd.initiator !== me && cmd.responder !== me) return; // not my round
-    r.lastRound = cmd.round; r.busy = true; setRangingStatus();
+    r.lastRound = cmd.round; r.busy = true;
+    const peer = cmd.initiator === me ? cmd.responder : cmd.initiator;
     try {
       const ch = cmd.chirp || {};
-      const buf = makeChirp(ctx, ch.f0 || 1500, ch.f1 || 4500, ch.dur_s || 0.05);
+      const buf = makeChirp(ctx, ch.f0 || 18000, ch.f1 || 20000, ch.dur_s || 0.06);
       const template = buf.getChannelData(0).slice();
+      const turn = RESPONDER_TURNAROUND_S;
+
       if (cmd.initiator === me) {
-        const t1 = ctx.currentTime + 0.12;
+        rangeLog("pinging " + _devName(peer) + "…");
+        const t1 = ctx.currentTime + 0.15;
         playChirpAt(ctx, buf, t1);
-        await sleep((0.12 + REPLY_WAIT_S) * 1000);
-        const hit = findChirp(template, t1 + 0.02, t1 + 0.12 + REPLY_WAIT_S);
-        if (hit) r.outbox.push({ round: cmd.round, role: "init", t1, t4: hit.time });
+        await sleep((0.15 + turn + REPLY_WAIT_S) * 1000 + 200);
+        // Search only AFTER the turnaround so we don't lock onto our own chirp's reverb.
+        const hit = findChirp(template, t1 + turn * 0.7, t1 + turn + REPLY_WAIT_S);
+        if (hit) { r.outbox.push({ round: cmd.round, role: "init", t1, t4: hit.time }); rangeLog("reply heard ✓", true); }
+        else rangeLog("no reply heard from " + _devName(peer));
       } else {
-        const tStart = ctx.currentTime;
-        await sleep(INCOMING_WAIT_S * 1000);
-        const hit = findChirp(template, tStart, ctx.currentTime);
-        if (hit) {
-          const t2 = hit.time;
-          const t3 = Math.max(ctx.currentTime + 0.05, t2 + RESPONDER_TURNAROUND_S);
+        rangeLog("listening for " + _devName(peer) + "…");
+        // Poll so we detect the incoming chirp EARLY and reply promptly (so the reply
+        // lands inside the initiator's listening window).
+        let t2 = null;
+        const deadline = Date.now() + INCOMING_WAIT_S * 1000;
+        while (Date.now() < deadline && t2 === null) {
+          await sleep(POLL_MS);
+          const hit = findChirp(template, ctx.currentTime - 0.35, ctx.currentTime);
+          if (hit) t2 = hit.time;
+        }
+        if (t2 !== null) {
+          const t3 = Math.max(ctx.currentTime + 0.04, t2 + turn);
           playChirpAt(ctx, buf, t3);
           r.outbox.push({ round: cmd.round, role: "resp", t2, t3 });
-        }
+          rangeLog("heard ping → replied", true);
+        } else rangeLog("no ping heard");
       }
     } catch (_) { /* swallow — ranging is best-effort */ }
-    finally { r.busy = false; setRangingStatus(); sendReport(); }
+    finally { r.busy = false; sendReport(); }
   }
 
   function _devName(id) {
