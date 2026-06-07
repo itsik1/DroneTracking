@@ -119,6 +119,8 @@ def main(argv=None) -> int:
     p.add_argument("--cert", default=None, help="TLS certificate (PEM); with --https")
     p.add_argument("--key", default=None, help="TLS private key (PEM); pair with --cert")
     p.add_argument("--no-qr", action="store_true", help="don't print the terminal QR code")
+    p.add_argument("--debug", action="store_true",
+                   help="log each device's join/report (incl. ranging timestamps) to the terminal")
     args = p.parse_args(argv)
 
     if (args.cert and not args.key) or (args.key and not args.cert):
@@ -137,7 +139,7 @@ def main(argv=None) -> int:
 
     # --- tunnel mode: run a local HTTP server in a thread, expose it via cloudflared ---
     if args.tunnel:
-        httpd = make_server(session, "127.0.0.1", args.port)
+        httpd = make_server(session, "127.0.0.1", args.port, debug=args.debug)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         print(f"local server on http://127.0.0.1:{args.port}")
         proc, url = _run_tunnel(args.port)
@@ -161,7 +163,7 @@ def main(argv=None) -> int:
     # --- direct mode (http on LAN, or --https) ---
     ssl_context = _build_ssl_context(args.cert, args.key) if args.https else None
     _announce(_primary_url(args.host, args.port, args.https), qr=not args.no_qr)
-    serve(session, host=args.host, port=args.port, ssl_context=ssl_context)
+    serve(session, host=args.host, port=args.port, ssl_context=ssl_context, debug=args.debug)
     return 0
 
 

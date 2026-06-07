@@ -40,6 +40,23 @@ MAX_DEVICE_AGE_S = 5.0
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
+
+def _log_report(body: dict) -> None:
+    """Print a one-line summary of a device report (for ``--debug``)."""
+    did = body.get("device_id", "?")
+    gps = "Y" if body.get("gps") else "-"
+    audio = body.get("audio") or {}
+    lvl = audio.get("level")
+    parts = [f"gps={gps}", f"lvl={lvl:.3f}" if isinstance(lvl, (int, float)) else "lvl=-",
+             f"det={'Y' if audio.get('detected') else '-'}"]
+    for e in (body.get("ranging") or []):
+        role = e.get("role")
+        if role == "init":
+            parts.append(f"rng:init t1={e.get('t1')} t4={e.get('t4')}")
+        elif role == "resp":
+            parts.append(f"rng:resp t2={e.get('t2')} t3={e.get('t3')}")
+    print(f"[{time.strftime('%H:%M:%S')}] report {did} " + " ".join(parts))
+
 # Content types for the (small, fixed) set of static assets we serve.
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -96,7 +113,7 @@ class _DeviceRegistry:
             return did
 
 
-def _make_handler(session, registry: _DeviceRegistry, static_dir: Path):
+def _make_handler(session, registry: _DeviceRegistry, static_dir: Path, debug: bool = False):
     params_bytes = json.dumps(DEFAULT_PARAMS).encode("utf-8")
 
     class Handler(BaseHTTPRequestHandler):
@@ -177,6 +194,8 @@ def _make_handler(session, registry: _DeviceRegistry, static_dir: Path):
             except Exception as exc:  # never let a Session bug 500 silently
                 self._send_error_json(500, f"session error: {exc}")
                 return
+            if debug:
+                print(f"[{time.strftime('%H:%M:%S')}] join {device_id} {name!r}")
             self._send_json({"device_id": device_id, "params": DEFAULT_PARAMS})
 
         def _handle_report(self) -> None:
@@ -193,6 +212,8 @@ def _make_handler(session, registry: _DeviceRegistry, static_dir: Path):
             except Exception as exc:
                 self._send_error_json(500, f"session error: {exc}")
                 return
+            if debug:
+                _log_report(body)
             self._send_json({"ok": True})
 
         def _handle_events(self) -> None:
@@ -271,7 +292,7 @@ def _make_handler(session, registry: _DeviceRegistry, static_dir: Path):
     return Handler
 
 
-def make_server(session, host: str = "127.0.0.1", port: int = 8000) -> ThreadingHTTPServer:
+def make_server(session, host: str = "127.0.0.1", port: int = 8000, debug: bool = False) -> ThreadingHTTPServer:
     """Build (but do not start) a :class:`ThreadingHTTPServer` bound to ``host:port``.
 
     Pass ``port=0`` to let the OS assign a free port (read it back from
@@ -280,7 +301,7 @@ def make_server(session, host: str = "127.0.0.1", port: int = 8000) -> Threading
     or in a thread (see the tests).
     """
     registry = _DeviceRegistry()
-    handler = _make_handler(session, registry, _STATIC_DIR)
+    handler = _make_handler(session, registry, _STATIC_DIR, debug=debug)
     httpd = _QuietThreadingHTTPServer((host, port), handler)
     # Daemonize per-request threads so a hung SSE stream never blocks shutdown.
     httpd.daemon_threads = True
@@ -294,6 +315,7 @@ def serve(
     port: int = 8000,
     ssl_context=None,
     url_scheme: Optional[str] = None,
+    debug: bool = False,
 ) -> None:
     """Start the web server and block until interrupted.
 
@@ -301,7 +323,7 @@ def serve(
     ``ssl_context`` (an :class:`ssl.SSLContext`), when given, wraps the listening
     socket for HTTPS — required for microphone access on phones over the LAN.
     """
-    httpd = make_server(session, host=host, port=port)
+    httpd = make_server(session, host=host, port=port, debug=debug)
     scheme = url_scheme or ("https" if ssl_context is not None else "http")
     if ssl_context is not None:
         httpd.socket = ssl_context.wrap_socket(httpd.socket, server_side=True)
