@@ -155,6 +155,8 @@ def _make_handler(session, registry: _DeviceRegistry, static_dir: Path):
             path = self.path.split("?", 1)[0]
             if path == "/api/events":
                 self._handle_events()
+            elif path == "/api/state":
+                self._handle_state()
             elif path in _STATIC_ROUTES:
                 self._serve_static(_STATIC_ROUTES[path])
             else:
@@ -225,6 +227,21 @@ def _make_handler(session, registry: _DeviceRegistry, static_dir: Path):
                 pass  # client navigated away / closed the tab
             except OSError:
                 pass  # socket torn down underneath us (e.g. on shutdown)
+
+        def _handle_state(self) -> None:
+            """One-shot state snapshot — the polling fallback for SSE.
+
+            A long-lived ``text/event-stream`` is frequently buffered or dropped by
+            tunnels (Cloudflare) and mobile browsers, which leaves a phone seeing nothing.
+            A plain JSON GET works everywhere, so the client polls this when SSE is silent.
+            """
+            try:
+                session.prune(MAX_DEVICE_AGE_S)
+                snapshot = session.state()
+            except Exception as exc:
+                self._send_error_json(500, f"session error: {exc}")
+                return
+            self._send_json(snapshot)
 
         # --- static files ---------------------------------------------------
         def _serve_static(self, filename: str) -> None:

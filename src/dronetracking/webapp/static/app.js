@@ -66,6 +66,7 @@
     // networking
     reportTimer: null,
     es: null,                // EventSource
+    pollTimer: null,         // /api/state polling fallback (works over tunnels/mobile)
     sseConnected: false,
     sseRetry: 0,
     lastSnapshot: null,
@@ -394,6 +395,27 @@
         setTimeout(startEvents, delay);
       }
     };
+  }
+
+  // Polling fallback. A long-lived SSE stream (/api/events) is frequently buffered or
+  // dropped by tunnels (Cloudflare) and mobile browsers, leaving a phone seeing zero
+  // devices. Polling /api/state is plain request/response and works everywhere — this is
+  // what makes the phone actually see the network and receive ranging commands.
+  function startPolling() {
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    const ms = Math.max(400, state.params.report_interval_s * 1000);
+    const tick = async () => {
+      try {
+        const res = await fetch("/api/state", { cache: "no-store" });
+        if (!res.ok) return;
+        const snap = await res.json();
+        state.lastSnapshot = snap;
+        renderSnapshot(snap);
+        if (!state.sseConnected) { state.sseConnected = true; renderConn(); } // data is flowing
+      } catch (_) { /* transient; the next poll (or SSE) covers it */ }
+    };
+    state.pollTimer = setInterval(tick, ms);
+    tick(); // fetch immediately so devices appear right away
   }
 
   // ------------------------------------------------------------------ Leaflet map
@@ -742,6 +764,7 @@
     state.started = true;
     initMap();
     startEvents();
+    startPolling();   // robust fallback so phones (behind a tunnel) still receive state
     startReporting();
 
     // 3) Microphone (best-effort; needs https on phones, needs a user gesture — we're inside one).
